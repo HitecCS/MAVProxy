@@ -303,10 +303,13 @@ class MPState(object):
         # mavlink outputs
         self.mav_outputs = []
         self.sysid_outputs = {}
+        self.mav_filtered_outputs = []
 
         # SITL output
         self.sitl_output = None
 
+        self.additional_msgs = []
+        self.mav_whitelisted_msgs = {}
         self.mav_param_by_sysid = {}
         self.mav_param_by_sysid[(self.settings.target_system,self.settings.target_component)] = mavparm.MAVParmDict()
         self.modules = []
@@ -782,7 +785,7 @@ def process_master(m):
             sys.stdout.write(str(s))
         sys.stdout.flush()
         return
-    
+
     global mavversion
     if m.first_byte and mavversion is None:
         m.auto_mavlink_version(s)
@@ -799,6 +802,57 @@ def process_master(m):
                 if opts.show_errors:
                     mpstate.console.writeln("MAV error: %s" % msg)
                 mpstate.status.mav_error += 1
+
+
+def process_filtered_mavlink(slave):
+    try:
+        buf = slave.recv()
+    except socket.error:
+        return
+    try:
+        global mavversion
+        if slave.first_byte and mavversion is None:
+            slave.auto_mavlink_version(buf)
+        msgs = slave.mav.parse_buffer(buf)
+    except mavutil.mavlink.MAVError as e:
+        mpstate.console.error("Bad MAVLink slave message from %s: %s" % (slave.address, e.message))
+        return
+    if msgs is None:
+        return
+    if mpstate.settings.mavfwd and not mpstate.status.setup_mode:
+        for m in msgs:
+            mpstate.console.writeln('> ' + str(m))
+            if m.get_msgId() in mpstate.whitelisted_msgs.keys():
+                target_sysid = getattr(m, 'target_system', -1)
+                mbuf = m.get_msgbuf()
+                mpstate.master(target_sysid).write(mbuf)
+                if mpstate.logqueue:
+                    usec = int(time.time() * 1.0e6)
+                    mpstate.logqueue.put(bytearray(struct.pack('>Q', usec)) + m.get_msgbuf())
+                if mpstate.status.watch:
+                    for msg_type in mpstate.status.watch:
+                        if fnmatch.fnmatch(m.get_type().upper(), msg_type.upper()):
+                            mpstate.console.writeln('> ' + str(m))
+                            break
+    mpstate.status.counters['Slave'] += 1
+
+
+
+#TODO: Looks like it's coming in from a diff vehicle, 255 on comp 230
+#Should this look like its coming from the autopilot? or is that ok?
+def process_additional_local_messages(m):
+    for msg in mpstate.additional_msgs:
+        if getattr(m, '_timestamp', None) is None:
+            m.post_message(msg)
+            packed_msg = msg.pack(m.mav)
+            for r in mpstate.mav_outputs:
+                r.write(packed_msg)
+            for s in mpstate.mav_filtered_outputs:
+                s.write(packed_msg)
+        if msg.get_type() == "BAD_DATA":
+            if opts.show_errors:
+                mpstate.console.writeln("MAV error: %s" % msg)
+            mpstate.status.mav_error += 1
 
 
 
@@ -823,9 +877,10 @@ def process_mavlink(slave):
             target_sysid = getattr(m, 'target_system', -1)
             mbuf = m.get_msgbuf()
             mpstate.master(target_sysid).write(mbuf)
+            mpstate.console.writeln('> ' + str(m))
             if mpstate.logqueue:
-                usec = int(time.time() * 1.0e6)
-                mpstate.logqueue.put(bytearray(struct.pack('>Q', usec) + m.get_msgbuf()))
+               usec = int(time.time() * 1.0e6)
+               mpstate.logqueue.put(bytearray(struct.pack('>Q', usec) + m.get_msgbuf()))
             if mpstate.status.watch:
                 for msg_type in mpstate.status.watch:
                     if fnmatch.fnmatch(m.get_type().upper(), msg_type.upper()):
@@ -1061,11 +1116,17 @@ def main_loop():
         for master in mpstate.mav_master:
             if master.fd is not None and not master.portdead:
                 rin.append(master.fd)
+
         for m in mpstate.mav_outputs:
             rin.append(m.fd)
+
+        for fo in mpstate.mav_filtered_outputs:
+            rin.append(fo.fd)
+
         for sysid in mpstate.sysid_outputs:
             m = mpstate.sysid_outputs[sysid]
             rin.append(m.fd)
+
         if rin == []:
             time.sleep(0.0001)
             continue
@@ -1073,12 +1134,13 @@ def main_loop():
         for fd in mpstate.select_extra:
             rin.append(fd)
         try:
-            (rin, win, xin) = select.select(rin, [], [], mpstate.settings.select_timeout)
+             (rin, win, xin) = select.select(rin, [], [], mpstate.settings.select_timeout)
         except select.error:
             continue
 
         if mpstate is None:
             return
+
 
         for fd in rin:
             if mpstate is None:
@@ -1086,12 +1148,21 @@ def main_loop():
             for master in mpstate.mav_master:
                   if fd == master.fd:
                         process_master(master)
+                        process_additional_local_messages(master)
+                        mpstate.additional_msgs = []
                         if mpstate is None:
                               return
                         continue
             for m in mpstate.mav_outputs:
                 if fd == m.fd:
                     process_mavlink(m)
+                    if mpstate is None:
+                          return
+                    continue
+
+            for fo in mpstate.mav_filtered_outputs:
+                if fd == fo.fd:
+                    process_filtered_mavlink(fo)
                     if mpstate is None:
                           return
                     continue

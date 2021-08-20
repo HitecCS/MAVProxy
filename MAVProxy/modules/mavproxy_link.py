@@ -748,6 +748,8 @@ class LinkModule(mp_module.MPModule):
                 if mtype not in self.no_fwd_types:
                     for r in self.mpstate.mav_outputs:
                         r.write(m.get_msgbuf())
+                    for s in self.mpstate.mav_filtered_outputs:
+                        s.write(m.get_msgbuf())
 
             sysid = m.get_srcSystem()
             target_sysid = self.target_system

@@ -214,8 +214,6 @@ class SlipPolygon(SlipObject):
 
     def draw_line(self, img, pixmapper, pt1, pt2, colour, linewidth):
         '''draw a line on the image'''
-        pt1 = mp_util.constrain_latlon(pt1)
-        pt2 = mp_util.constrain_latlon(pt2)
         pix1 = pixmapper(pt1)
         pix2 = pixmapper(pt2)
         (width, height) = image_shape(img)
@@ -285,8 +283,6 @@ class SlipGrid(SlipObject):
 
     def draw_line(self, img, pixmapper, pt1, pt2, colour, linewidth):
         '''draw a line on the image'''
-        pt1 = mp_util.constrain_latlon(pt1)
-        pt2 = mp_util.constrain_latlon(pt2)
         pix1 = pixmapper(pt1)
         pix2 = pixmapper(pt2)
         (width, height) = image_shape(img)
@@ -294,19 +290,17 @@ class SlipGrid(SlipObject):
         if ret is False:
             return
         cv2.line(img, pix1, pix2, colour, linewidth)
+        cv2.circle(img, pix2, linewidth*2, colour)
 
     def draw(self, img, pixmapper, bounds):
         '''draw a polygon on the image'''
         if self.hidden:
             return
-        (lat,lon,w,h) = bounds
-        # note that w and h are in degrees
+        (x,y,w,h) = bounds
         spacing = 1000
         while True:
-            start = mp_util.latlon_round((lat,lon), spacing)
-            lat2 = mp_util.constrain(lat+h*0.5,-85,85)
-            lon2 = mp_util.wrap_180(lon+w)
-            dist = mp_util.gps_distance(lat2,lon,lat2,lon2)
+            start = mp_util.latlon_round((x,y), spacing)
+            dist = mp_util.gps_distance(x,y,x+w,y+h)
             count = int(dist / spacing)
             if count < 2:
                 spacing /= 10
@@ -315,17 +309,13 @@ class SlipGrid(SlipObject):
             else:
                 break
 
-        count += 10
-
-        for i in range(count):
-            # draw vertical lines of constant longitude
+        for i in range(count*2+2):
             pos1 = mp_util.gps_newpos(start[0], start[1], 90, i*spacing)
-            pos3 = (pos1[0]+h*2, pos1[1])
+            pos3 = mp_util.gps_newpos(pos1[0], pos1[1], 0, 3*count*spacing)
             self.draw_line(img, pixmapper, pos1, pos3, self.colour, self.linewidth)
 
-            # draw horizontal lines of constant latitude
             pos1 = mp_util.gps_newpos(start[0], start[1], 0, i*spacing)
-            pos3 = (pos1[0], pos1[1]+w*2)
+            pos3 = mp_util.gps_newpos(pos1[0], pos1[1], 90, 3*count*spacing)
             self.draw_line(img, pixmapper, pos1, pos3, self.colour, self.linewidth)
 
 

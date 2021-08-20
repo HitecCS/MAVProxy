@@ -14,21 +14,25 @@ class NtripModule(mp_module.MPModule):
     def __init__(self, mpstate):
         super(NtripModule, self).__init__(mpstate, "ntrip", "ntrip", public=False)
         self.ntrip_settings = mp_settings.MPSettings(
-            [('caster', str, None),
+            [('caster', str, "192.168.3.1"),
              ('port', int, 2101),
              ('username', str, 'IBS'),
              ('password', str, 'IBS'),
-             ('mountpoint', str, None),
+             ('mountpoint', str, "HITECBASE"),
              ('logfile', str, None),
              ('sendalllinks', bool, False),
              ('sendmul', int, 1)])
+
         self.add_command('ntrip', self.cmd_ntrip, 'NTRIP control',
                          ["<status>",
                           "<start>",
                           "<stop>",
                           "set (NTRIPSETTING)"])
+
         self.add_completion_function('(NTRIPSETTING)',
                                      self.ntrip_settings.completion)
+
+
         self.pos = None
         self.pkt_count = 0
         self.last_pkt = None
@@ -41,6 +45,8 @@ class NtripModule(mp_module.MPModule):
         self.logfile = None
         self.id_counts = {}
         self.last_by_id = {}
+        self.scanner = nmap.PortScanner()
+        host = socket.gethostbyname(ip_addr)
 
     def mavlink_packet(self, msg):
         '''handle an incoming mavlink packet'''
@@ -57,6 +63,10 @@ class NtripModule(mp_module.MPModule):
         if self.logfile is not None:
             self.logfile.write(data)
 
+    #Looks like an ntrip client is created in cmd start, connection is made in read, if no data OR no connecttion, it WILL take
+    #at least 15 seconds to create a new ntrip client to then read (connect to + read from) If there has been a previous
+    #valid socket connection, i.e. plugging in ntrip device then taking it out. If there was no previous socket connection should
+    #keep trying to create socket when read is happening 
     def idle_task(self):
         '''called on idle'''
         if self.start_pending and self.ntrip is None and self.pos is not None:
@@ -123,6 +133,24 @@ class NtripModule(mp_module.MPModule):
             self.rate_total = 0
         self.last_pkt = now
 
+    def start_client(self):
+        if self.pos is None:
+            print("Start delayed pending position")
+            return
+        user = self.ntrip_settings.username + ":" + self.ntrip_settings.password
+        self.ntrip = ntrip.NtripClient(user=user,
+                                       port=self.ntrip_settings.port,
+                                       caster=self.ntrip_settings.caster,
+                                       mountpoint=self.ntrip_settings.mountpoint,
+                                       lat=self.pos[0],
+                                       lon=self.pos[1],
+                                       height=self.pos[2])
+        print("NTRIP started")
+        self.start_pending = False
+        self.last_rate = time.time()
+        self.rate_total = 0
+
+
     def cmd_ntrip(self, args):
         '''ntrip command handling'''
         if len(args) <= 0:
@@ -177,6 +205,7 @@ class NtripModule(mp_module.MPModule):
         self.start_pending = False
         self.last_rate = time.time()
         self.rate_total = 0
+
 
 
 def init(mpstate):

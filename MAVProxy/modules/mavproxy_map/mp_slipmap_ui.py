@@ -386,10 +386,6 @@ class MPSlipMapPanel(wx.Panel):
         state = self.state
         return state.mt.coord_from_area(x, y, state.lat, state.lon, state.width, state.ground_width)
 
-    def constrain_latlon(self):
-        self.state.lat = mp_util.constrain(self.state.lat, -85, 85)
-        self.state.lon = mp_util.wrap_180(self.state.lon)
-
     def re_center(self, x, y, lat, lon):
         '''re-center view for pixel x,y'''
         state = self.state
@@ -399,7 +395,6 @@ class MPSlipMapPanel(wx.Panel):
         distance = mp_util.gps_distance(lat2, lon2, lat, lon)
         bearing  = mp_util.gps_bearing(lat2, lon2, lat, lon)
         (state.lat, state.lon) = mp_util.gps_newpos(state.lat, state.lon, bearing, distance)
-        self.constrain_latlon()
 
     def set_ground_width(self, ground_width):
         '''set ground width of view'''
@@ -415,8 +410,6 @@ class MPSlipMapPanel(wx.Panel):
         else:
             (x,y) = (state.width/2, state.height/2)
         (lat,lon) = self.coordinates(x, y)
-        lat = mp_util.constrain(lat, -85, 85)
-        lon = mp_util.constrain(lon, -180, 180)
         state.ground_width *= zoom
         # limit ground_width to sane values
         state.ground_width = max(state.ground_width, 2)
@@ -433,7 +426,6 @@ class MPSlipMapPanel(wx.Panel):
             dlg.Destroy()
             state.lat = float(latlon[0])
             state.lon = float(latlon[1])
-            self.constrain_latlon()
             self.re_center(state.width/2,state.height/2, state.lat, state.lon)
             self.redraw_map()
 
@@ -669,7 +661,6 @@ class MPSlipMapPanel(wx.Panel):
                     distance = (state.ground_width/float(state.width)) * pdist
                     newlatlon = mp_util.gps_newpos(state.lat, state.lon, bearing, distance)
                     (state.lat, state.lon) = newlatlon
-                    self.constrain_latlon()
                     self.mouse_down = newpos
                     self.redraw_map()
 
