@@ -5,7 +5,10 @@ from time import sleep
 from pymavlink.dialects.v10 import ardupilotmega
 import multiprocessing
 from MAVProxy.modules.lib import mp_module
+import sys
 
+sys.path.append("/home/pi/settings")
+from setting_utils import get_current_battery_id, SettingsModified
 
 
 class BMSOutput(mp_module.MPModule):
@@ -16,17 +19,19 @@ class BMSOutput(mp_module.MPModule):
 		bms.start()
 
 
+	#TODO: if we whant to at time to empty, can use an existing int32 field or use mavlink2 message for additoinal TTE field
 	def idle_task(self):
 		try:
-			RSOC, TTE = self.bms_info_queue.get(False)
+			RSOC, TTE, ID = self.bms_info_queue.get(False)
 			if RSOC and TTE and RSOC != -1 and TTE != -1:
-				msg = ardupilotmega.MAVLink_battery2_message(RSOC, TTE)
+				msg = ardupilotmega.MAVLink_battery_status_message(ID, 0,0,32767, [0,0,0,0,0,0,0,0,0,0], -1,-1,-1,RSOC)
 				self.mpstate.additional_msgs.append(msg)
 		except Exception as e:
 			pass
 
 
 class BMS(multiprocessing.Process):
+
 	def __init__(self, bms_info_queue, test=False, period=1, addr=0x0b, bus=1):
 		multiprocessing.Process.__init__(self)
 		self.addr = addr
@@ -35,6 +40,8 @@ class BMS(multiprocessing.Process):
 		self.period = period
 		self.test = test
 		self.bus = SMBus(bus)
+		self.id = int(get_current_battery_id())
+
 
 	def read_word(self, comm):
 		try:
@@ -60,7 +67,9 @@ class BMS(multiprocessing.Process):
 		while True:
 			RSOC = self.getRelativeStateOfCharge()
 			TTE = self.getRunTimeToEmpty()
-			self.bms_info_queue.put((RSOC, TTE))
+			if SettingsModified():
+				self.id = int(get_current_battery_id())
+			self.bms_info_queue.put((RSOC, TTE, self.id))
 			sleep(self.period)
 
 

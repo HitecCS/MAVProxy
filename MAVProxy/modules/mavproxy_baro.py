@@ -241,5 +241,5 @@ class BaroOutput(mp_module.MPModule):
 
 def init(mpstate):
 	return BaroOutput(mpstate)
-    
+
 

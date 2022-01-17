@@ -792,6 +792,7 @@ def process_master(m):
     msgs = m.mav.parse_buffer(s)
     if msgs:
         for msg in msgs:
+            mpstate.console.writeln('> ' + str(msg))
             sysid = msg.get_srcSystem()
             if sysid in mpstate.sysid_outputs:
                   # the message has been handled by a specialised handler for this system
@@ -821,7 +822,6 @@ def process_filtered_mavlink(slave):
         return
     if mpstate.settings.mavfwd and not mpstate.status.setup_mode:
         for m in msgs:
-            mpstate.console.writeln('> ' + str(m))
             if m.get_msgId() in mpstate.whitelisted_msgs.keys():
                 target_sysid = getattr(m, 'target_system', -1)
                 mbuf = m.get_msgbuf()
