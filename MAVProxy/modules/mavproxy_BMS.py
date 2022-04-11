@@ -15,11 +15,11 @@ class BMSOutput(mp_module.MPModule):
 	def __init__(self, mpstate):
 		super(BMSOutput, self).__init__(mpstate, "Battery Management System Output", "Sends controller BMS data to connected IPS")
 		self.bms_info_queue = multiprocessing.Queue()
-		bms = BMS(self.bms_info_queue, test=True)
+		bms = BMS(self.bms_info_queue)
 		bms.start()
 
 
-	#TODO: if we whant to at time to empty, can use an existing int32 field or use mavlink2 message for additoinal TTE field
+	#TODO: if we want to add time to empty, can use an existing int32 field or use mavlink2 message for additoinal TTE field
 	def idle_task(self):
 		try:
 			RSOC, TTE, ID = self.bms_info_queue.get(False)

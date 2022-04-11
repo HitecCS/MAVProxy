@@ -19,7 +19,7 @@ WHITELISTED_MSGS = {
 	43: "MISSION_REQUEST_LIST",
 	37: "MISSION_REQUEST_PARTIAL_LIST",
         40: "MISSION_REQUEST",
-	37: "MISSION_ACK",
+	47: "MISSION_ACK",
 	51: "MISSION_REQUEST_INT"
 }
 
@@ -50,7 +50,6 @@ class DynamicTelemetry(mp_module.MPModule):
 
 	def add(self, ip):
 		if not self.linked(ip):
-			print("Adding {}".format(ip))
 			self.links[ip] = Link(ip, self)
 			self.links[ip].add_connection()
 		else:
@@ -59,7 +58,6 @@ class DynamicTelemetry(mp_module.MPModule):
 
 	def remove(self, ip):
 		if self.linked(ip):
-			print("Deleting {}".format(ip))
 			self.links[ip].remove_connection()
 			del self.links[ip]
 		else:
@@ -104,6 +102,7 @@ class CommandProtocol:
 
 	def datagram_received(self, data, addr):
 		message = data.decode()
+		print(str(message))
 		self.cmd_queue.put(message)
 
 	def connection_lost(self, exc):
