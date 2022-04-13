@@ -70,6 +70,7 @@ class Baro(multiprocessing.Process):
 
 		# Initialize needed GPIO
 		GPIO.setmode(self.board)
+		GPIO.setwarnings(False)
 		GPIO.setup(self.cs_pin, GPIO.OUT)
 		GPIO.setup(self.clock_pin, GPIO.OUT)
 		GPIO.setup(self.data_in_pin, GPIO.IN)
@@ -212,10 +213,10 @@ class Baro(multiprocessing.Process):
 
 	def run(self):
 		while True:
-			ms.update()
-			temp = ms.returnTemperature()
-			pressure = ms.returnPressure()
-			alt = ms.returnAltitude(101.7)
+			self.update()
+			temp = self.returnTemperature()
+			pressure = self.returnPressure()
+			alt = self.returnAltitude(101.7)
 			self.baro_info_queue.put((temp, pressure, alt, self.check_working_coeffs()))
 			time.sleep(self.period)
 
@@ -233,8 +234,10 @@ class BaroOutput(mp_module.MPModule):
 		try:
 			temp, pressure, alt, valid_coeffs = self.baro_info_queue.get(False)
 			if valid_coeffs:
-				msg = ardupilotmega.MAVLink_scaled_pressure_message(0, pressure, 0, temp)
+				msg = ardupilotmega.MAVLink_scaled_pressure_message(0, float(pressure), float(0), int(float(temp)))
 				self.mpstate.additional_msgs.append(msg)
+		except KeyboardInterrupt as e:
+			GPIO.cleanup()
 		except Exception as e:
 			pass
 
