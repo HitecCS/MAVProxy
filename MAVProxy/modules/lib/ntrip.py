@@ -3,7 +3,7 @@
  NTRIP client module
  based on client from http://github.com/jcmb/NTRIP
 """
-
+import netifaces
 import socket
 import sys
 import datetime
@@ -16,6 +16,14 @@ from optparse import OptionParser
 
 version = 0.1
 useragent = "NTRIP MAVProxy/%.1f" % version
+
+def is_interface_up(interface):
+    try:
+        #TODO: see if we can put a timeout on this, can hang
+        addr = netifaces.ifaddresses(interface)
+    except ValueError as e:
+        return False
+    return netifaces.AF_INET in addr
 
 
 class NtripError(Exception):
@@ -120,6 +128,7 @@ class NtripClient(object):
 
     def read(self):
         if self.socket is None:
+            print("socket doesn't exist")
             time.sleep(0.1)
             self.connect()
             return None
@@ -152,11 +161,13 @@ class NtripClient(object):
                 if line == "":
                     self.found_header = True
                 if line.find("SOURCETABLE") != -1:
-                    raise NtripError("Mount point does not exist")
+                    self.socket = None
+                    #raise NtripError("Mount point does not exist")
                 elif line.find("401 Unauthorized") != -1:
                     raise NtripError("Unauthorized request")
                 elif line.find("404 Not Found") != -1:
-                    raise NtripError("Mount Point does not exist")
+                    self.socket = None
+                   #raise NtripError("Mount Point does not exist")
                 elif line.find(" 200 OK") != -1:
                     # Request was valid
                     try:
@@ -176,15 +187,20 @@ class NtripClient(object):
                     return None
             except IOError as e:
                 if e.errno == errno.EWOULDBLOCK:
+                    if(not is_interface_up("usb0")):
+                        self.socket.close()
+                        self.socket = None
                     return None
                 self.socket.close()
                 self.socket = None
                 return None
             except Exception:
+                print("socket exception on read")
                 self.socket.close()
                 self.socket = None
                 return None
             if len(data) == 0:
+                print("socket has no data coming in")
                 self.socket.close()
                 self.socket = None
                 return None
@@ -202,6 +218,7 @@ class NtripClient(object):
         try:
             error_indicator = sock.connect_ex((self.caster, self.port))
         except Exception:
+            print("socket exception on connect")
             return False
         if error_indicator == 0:
             sock.setblocking(0)
@@ -244,7 +261,6 @@ if __name__ == '__main__':
         ntripArgs['ssl'] = True
     else:
         ntripArgs['ssl'] = False
-
     if options.org:
         if len(args) != 1:
             print("Incorrect number of arguments for IBSS\n")
