@@ -14,7 +14,6 @@ import cv2
 import numpy as np
 import warnings
 
-from MAVProxy.modules.mavproxy_map import mp_elevation
 from MAVProxy.modules.mavproxy_map import mp_tile
 from MAVProxy.modules.lib import mp_util
 
@@ -195,7 +194,7 @@ class SlipCircle(SlipObject):
 
 class SlipPolygon(SlipObject):
     '''a polygon to display on the map'''
-    def __init__(self, key, points, layer, colour, linewidth, arrow = False, popup_menu=None):
+    def __init__(self, key, points, layer, colour, linewidth, arrow = False, popup_menu=None, showlines=True):
         SlipObject.__init__(self, key, layer, popup_menu=popup_menu)
         self.points = points
         self.colour = colour
@@ -205,6 +204,7 @@ class SlipPolygon(SlipObject):
         self._pix_points = []
         self._selected_vertex = None
         self._has_timestamps = False
+        self._showlines = showlines
 
     def bounds(self):
         '''return bounding box'''
@@ -223,7 +223,8 @@ class SlipPolygon(SlipObject):
                 self._pix_points.append(None)
             self._pix_points.append(None)
             return
-        cv2.line(img, pix1, pix2, colour, linewidth)
+        if self._showlines:
+            cv2.line(img, pix1, pix2, colour, linewidth)
         cv2.circle(img, pix2, linewidth*2, colour)
         if len(self._pix_points) == 0:
             self._pix_points.append(pix1)
@@ -303,9 +304,9 @@ class SlipGrid(SlipObject):
             dist = mp_util.gps_distance(x,y,x+w,y+h)
             count = int(dist / spacing)
             if count < 2:
-                spacing /= 10
+                spacing /= 10.0
             elif count > 50:
-                spacing *= 10
+                spacing *= 10.0
             else:
                 break
 

@@ -76,6 +76,7 @@ class MiscModule(mp_module.MPModule):
         self.add_command('time', self.cmd_time, "show autopilot time")
         self.add_command('shell', self.cmd_shell, "run shell command")
         self.add_command('changealt', self.cmd_changealt, "change target altitude")
+        self.add_command('changealt_abs', self.cmd_changealt_abs, "change target absolute altitude")
         self.add_command('land', self.cmd_land, "auto land")
         self.add_command('repeat', self.cmd_repeat, "repeat a command at regular intervals",
                          ["<add|remove|clear>"])
@@ -88,15 +89,22 @@ class MiscModule(mp_module.MPModule):
         self.add_command('devid', self.cmd_devid, "show device names from parameter IDs")
         self.add_command('gethome', self.cmd_gethome, "get HOME_POSITION")
         self.add_command('flashbootloader', self.cmd_flashbootloader, "flash bootloader (dangerous)")
+        self.add_command('wipe_parameters', self.cmd_wipe_parameters, "wipe autopilot parameters")
         self.add_command('lockup_autopilot', self.cmd_lockup_autopilot, "lockup autopilot")
         self.add_command('corrupt_params', self.cmd_corrupt_param, "corrupt param storage")
         self.add_command('hardfault_autopilot', self.cmd_hardfault_autopilot, "hardfault autopilot")
         self.add_command('panic_autopilot', self.cmd_panic_autopilot, "panic autopilot")
         self.add_command('longloop_autopilot', self.cmd_longloop_autopilot, "cause long loop in autopilot")
+        self.add_command('internalerror_autopilot', self.cmd_internalerror_autopilot, "cause internal error in autopilot")
         self.add_command('batreset', self.cmd_battery_reset, "reset battery remaining")
         self.add_command('setorigin', self.cmd_setorigin, "set global origin")
         self.add_command('magsetfield', self.cmd_magset_field, "set expected mag field by field")
         self.add_command('magresetofs', self.cmd_magreset_ofs, "reset offsets for all compasses")
+        self.add_command('namedvaluefloat', self.cmd_namedvaluefloat, "send a NAMED_VALUE_FLOAT")
+        self.add_command('scripting', self.cmd_scripting, "control onboard scripting", ["<stop|restart>"])
+        self.add_command('formatsdcard', self.cmd_formatsdcard, "format SD card")
+        self.add_command('canforward', self.cmd_canforward, "enable CAN forwarding")
+
         self.repeats = []
 
     def altitude_difference(self, pressure1, pressure2, ground_temp):
@@ -153,6 +161,20 @@ class MiscModule(mp_module.MPModule):
         else:
             self.master.reboot_autopilot()
 
+    def cmd_wipe_parameters(self, args):
+        self.master.mav.command_long_send(
+            self.settings.target_system,
+            self.settings.target_component,
+            mavutil.mavlink.MAV_CMD_PREFLIGHT_STORAGE,
+            0,
+            2,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0)
+
     def cmd_dosomethingreallynastyto_autopilot(self, args, description, code):
         '''helper function for the following commands which do unpleasant
         things to the autopilot'''
@@ -178,7 +200,7 @@ class MiscModule(mp_module.MPModule):
 
     def cmd_hardfault_autopilot(self, args):
         '''lockup autopilot for watchdog testing'''
-        self.cmd_dosomethingreallynastyto_autopilot(args, 'corruption', 94)
+        self.cmd_dosomethingreallynastyto_autopilot(args, 'hardfault', 94)
 
     def cmd_panic_autopilot(self, args):
         '''get ArduPilot to call AP_HAL::panic()'''
@@ -191,6 +213,10 @@ class MiscModule(mp_module.MPModule):
     def cmd_longloop_autopilot(self, args):
         '''Ask the autopilot to create a long loop'''
         self.cmd_dosomethingreallynastyto_autopilot(args, 'long-loop', 97)
+
+    def cmd_internalerror_autopilot(self, args):
+        '''Ask the autopilot to create an internal error'''
+        self.cmd_dosomethingreallynastyto_autopilot(args, 'internal-error', 98)
 
     def cmd_battery_reset(self, args):
         '''reset battery remaining'''
@@ -227,6 +253,21 @@ class MiscModule(mp_module.MPModule):
                                           0, 0, relalt)
         print("Sent change altitude command for %.1f meters" % relalt)
 
+    def cmd_changealt_abs(self, args):
+        '''change target altitude'''
+        if len(args) < 1:
+            print("usage: changealt <relaltitude>")
+            return
+        absalt = float(args[0])
+        self.master.mav.mission_item_send(self.settings.target_system,
+                                          self.settings.target_component,
+                                          0,
+                                          0,
+                                          mavutil.mavlink.MAV_CMD_NAV_WAYPOINT,
+                                          3, 1, 0, 0, 0, 0,
+                                          0, 0, absalt)
+        print("Sent change altitude command for %.1f meters" % absalt)
+        
     def cmd_land(self, args):
         '''auto land commands'''
         if len(args) < 1:
@@ -293,6 +334,40 @@ class MiscModule(mp_module.MPModule):
                                          self.settings.target_component,
                                          0, 0, plen, pattern)
 
+    def cmd_scripting(self, args):
+        '''control onboard scripting'''
+        if len(args) < 1:
+            print("Usage: scripting <stop|restart>")
+            return
+
+        if args[0] == 'restart':
+            cmd = mavutil.mavlink.SCRIPTING_CMD_STOP_AND_RESTART
+        elif args[0] == 'stop':
+            cmd = mavutil.mavlink.SCRIPTING_CMD_STOP
+        else:
+            print("Usage: scripting <stop|restart>")
+            return
+
+        # MAVProxy command to stop and re-start is: command_int 0 42701 0 0 3 0 0 0 0 0 0
+
+        self.master.mav.command_int_send(
+            self.settings.target_system, self.settings.target_component,
+            mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT_INT,
+            mavutil.mavlink.MAV_CMD_SCRIPTING,
+            0, 0,
+            cmd,
+            0,0,0,0,0,0)
+
+    def cmd_formatsdcard(self, args):
+        '''format SD card'''
+        self.master.mav.command_int_send(
+            self.settings.target_system, self.settings.target_component,
+            mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT_INT,
+            mavutil.mavlink.MAV_CMD_STORAGE_FORMAT,
+            0, 0,
+            1, 1,
+            0,0,0,0,0)
+        
     def cmd_oreoled(self, args):
         '''send LED pattern as override, using OreoLED conventions'''
         if len(args) < 4:
@@ -368,7 +443,8 @@ class MiscModule(mp_module.MPModule):
     def cmd_devid(self, args):
         '''decode device IDs from parameters'''
         for p in self.mav_param.keys():
-            if p.startswith('COMPASS_DEV_ID') or p.startswith('COMPASS_PRIO'):
+            if p.startswith('COMPASS_DEV_ID') or p.startswith('COMPASS_PRIO') or (
+                    p.startswith('COMPASS') and p.endswith('DEV_ID')):
                 mp_util.decode_devid(self.mav_param[p], p)
             if p.startswith('INS_') and p.endswith('_ID'):
                 mp_util.decode_devid(self.mav_param[p], p)
@@ -390,9 +466,9 @@ class MiscModule(mp_module.MPModule):
         print("Setting origin to: ", lat, lon, alt)
         self.master.mav.set_gps_global_origin_send(
             self.settings.target_system,
-            lat*10000000, # lat
-            lon*10000000, # lon
-            alt*1000) # param7
+            int(lat*10000000), # lat
+            int(lon*10000000), # lon
+            int(alt*1000)) # param7
 
     def cmd_magset_field(self, args):
         '''set compass offsets by field'''
@@ -458,8 +534,35 @@ class MiscModule(mp_module.MPModule):
         self.param_set('COMPASS_ODI3_X', 0)
         self.param_set('COMPASS_ODI3_Y', 0)
         self.param_set('COMPASS_ODI3_Z', 0)
-        
 
+    def cmd_namedvaluefloat(self, args):
+        '''send a NAMED_VALUE_FLOAT'''
+        if len(args) < 2:
+            print("Usage: namedvaluefloat NAME value")
+            return
+        tnow_ms = int((time.time() - self.mpstate.start_time_s)*1000)
+        name = args[0]
+        value = float(args[1])
+        self.master.mav.named_value_float_send(tnow_ms, name.encode("utf-8"), value)
+
+    def cmd_canforward(self, args):
+        if len(args) < 1:
+            print("Usage: canforward bus")
+            return
+        bus = int(args[0])
+        self.master.mav.command_long_send(
+            self.settings.target_system,
+            self.settings.target_component,
+            mavutil.mavlink.MAV_CMD_CAN_FORWARD,
+            0,
+            bus,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0)
+        
     def idle_task(self):
         '''called on idle'''
         for r in self.repeats:

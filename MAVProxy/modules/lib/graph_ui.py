@@ -1,6 +1,9 @@
 from MAVProxy.modules.lib import grapher
 from MAVProxy.modules.lib import multiproc
 
+import errno
+import socket
+
 graph_count = 1
 
 class Graph_UI(object):
@@ -52,11 +55,11 @@ class Graph_UI(object):
         if self.xlim_pipe is None:
             return None
         xlim = None
-        while self.xlim_pipe[0].poll():
-            try:
+        try:
+            while self.xlim_pipe[0].poll():
                 xlim = self.xlim_pipe[0].recv()
-            except EOFError:
-                return None
+        except Exception:
+            return None
         if xlim != self.xlim:
             return xlim
         return None

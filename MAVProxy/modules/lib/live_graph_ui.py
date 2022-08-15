@@ -1,4 +1,5 @@
 from MAVProxy.modules.lib.wx_loader import wx
+from MAVProxy.modules.lib import icon
 import time
 import numpy, pylab
 
@@ -8,6 +9,10 @@ class GraphFrame(wx.Frame):
 
     def __init__(self, state):
         wx.Frame.__init__(self, None, -1, state.title)
+        try:
+            self.SetIcon(icon.SimpleIcon().get_ico())
+        except Exception:
+            pass
         self.state = state
         self.data = []
         for i in range(len(state.fields)):
@@ -20,7 +25,7 @@ class GraphFrame(wx.Frame):
 
         self.redraw_timer = wx.Timer(self)
         self.Bind(wx.EVT_TIMER, self.on_redraw_timer, self.redraw_timer)
-        self.redraw_timer.Start(1000*self.state.tickresolution)
+        self.redraw_timer.Start(int(1000*self.state.tickresolution))
 
         self.last_yrange = (None, None)
 

@@ -8,7 +8,6 @@ June 2012
 import sys, os, math
 import functools
 import time
-from MAVProxy.modules.mavproxy_map import mp_elevation
 from MAVProxy.modules.lib import mp_util
 from MAVProxy.modules.lib import mp_settings
 from MAVProxy.modules.lib import mp_module
@@ -22,7 +21,7 @@ class MapModule(mp_module.MPModule):
         if self.instance > 1:
             cmdname += "%u" % self.instance
         # lat/lon per system ID
-        self.lat_lon = {}
+        self.lat_lon_heading = {}
         self.wp_change_time = 0
         self.fence_change_time = 0
         self.rally_change_time = 0
@@ -40,10 +39,10 @@ class MapModule(mp_module.MPModule):
         self.have_global_position = False
         self.vehicle_type_by_sysid = {}
         self.vehicle_type_name = 'plane'
-        self.ElevationMap = mp_elevation.ElevationModel()
         self.last_unload_check_time = time.time()
         self.unload_check_interval = 0.1 # seconds
         self.trajectory_layers = set()
+        self.vehicle_type_override = {}
         self.map_settings = mp_settings.MPSettings(
             [ ('showgpspos', int, 1),
               ('showgps2pos', int, 1),
@@ -66,7 +65,7 @@ class MapModule(mp_module.MPModule):
         title = "Map"
         if self.instance > 1:
             title += str(self.instance)
-        self.map = mp_slipmap.MPSlipMap(service=service, elevation=True, title=title)
+        self.map = mp_slipmap.MPSlipMap(service=service, elevation=self.module('terrain').ElevationModel.database, title=title)
         if self.instance == 1:
             self.mpstate.map = self.map
             mpstate.map_functions = { 'draw_lines' : self.draw_lines }
@@ -74,6 +73,7 @@ class MapModule(mp_module.MPModule):
         self.map.add_callback(functools.partial(self.map_callback))
         self.add_command(cmdname, self.cmd_map, "map control", ['icon',
                                                                 'set (MAPSETTING)',
+                                                                'vehicletype',
                                                                 'zoom',
                                                                 'center',
                                                                 'follow',
@@ -89,6 +89,7 @@ class MapModule(mp_module.MPModule):
         self.add_menu(MPMenuItem('Set Origin (with height)', 'Set Origin', '# map setorigin '))
         self.add_menu(MPMenuItem('Terrain Check', 'Terrain Check', '# terrain check'))
         self.add_menu(MPMenuItem('Show Position', 'Show Position', 'showPosition'))
+        self.add_menu(MPMenuItem('Set ROI', 'Set ROI', '# map setroi '))
 
         self._colour_for_wp_command = {
             # takeoff commands
@@ -161,6 +162,14 @@ class MapModule(mp_module.MPModule):
                                                            (float(lat),float(lon)),
                                                    icon, layer=3, rotation=0, follow=False))
                 self.icon_counter += 1
+        elif args[0] == "vehicletype":
+            if len(args) < 3:
+                print("Usage: map vehicletype SYSID TYPE")
+            else:
+                sysid = int(args[1])
+                vtype = int(args[2])
+                self.vehicle_type_override[sysid] = vtype
+                print("Set sysid %u to vehicle type %u" % (sysid, vtype))
         elif args[0] == "circle":
             if len(args) < 4:
                 # map circle -27.70533373 153.23404844 5 red
@@ -209,6 +218,8 @@ class MapModule(mp_module.MPModule):
             self.cmd_follow(args)
         elif args[0] == "clear":
             self.cmd_clear(args)
+        elif args[0] == "setroi":
+            self.cmd_set_roi(args)
         else:
             print("usage: map <icon|set>")
 
@@ -461,7 +472,8 @@ class MapModule(mp_module.MPModule):
             self.move_fencepoint(obj.selected[0].objkey, obj.selected[0].extra_info)
         elif menuitem.returnkey == 'showPosition':
             self.show_position()
-
+        elif menuitem.returnkey == 'setServiceTerrain':
+            self.module('terrain').cmd_terrain(['set', 'source', menuitem.get_choice()])
 
     def map_callback(self, obj):
         '''called when an event happens on the slipmap'''
@@ -575,7 +587,7 @@ class MapModule(mp_module.MPModule):
     def cmd_set_home(self, args):
         '''called when user selects "Set Home (with height)" on map'''
         (lat, lon) = (self.mpstate.click_location[0], self.mpstate.click_location[1])
-        alt = self.ElevationMap.GetElevation(lat, lon)
+        alt = self.module('terrain').ElevationModel.GetElevation(lat, lon)
         print("Setting home to: ", lat, lon, alt)
         self.master.mav.command_long_send(
             self.settings.target_system, self.settings.target_component,
@@ -607,10 +619,27 @@ class MapModule(mp_module.MPModule):
             int(lon*1e7), # lon
             0) # no height change
 
+    def cmd_set_roi(self, args):
+        '''called when user selects "Set ROI" on map'''
+        (lat, lon) = (self.mpstate.click_location[0], self.mpstate.click_location[1])
+        alt = self.module('terrain').ElevationModel.GetElevation(lat, lon)
+        print("Setting ROI to: ", lat, lon, alt)
+        self.master.mav.command_long_send(
+            self.settings.target_system, self.settings.target_component,
+            mavutil.mavlink.MAV_CMD_DO_SET_ROI_LOCATION,
+            0, # confirmation
+            0, # param1
+            0, # param2
+            0, # param3
+            0, # param4
+            lat, # lat
+            lon, # lon
+            alt) # param7
+        
     def cmd_set_origin(self, args):
         '''called when user selects "Set Origin (with height)" on map'''
         (lat, lon) = (self.mpstate.click_location[0], self.mpstate.click_location[1])
-        alt = self.ElevationMap.GetElevation(lat, lon)
+        alt = self.module('terrain').ElevationModel.GetElevation(lat, lon)
         print("Setting origin to: ", lat, lon, alt)
         self.master.mav.set_gps_global_origin_send(
             self.settings.target_system,
@@ -666,7 +695,7 @@ class MapModule(mp_module.MPModule):
         if abs(lat) < 1.0e-3 and abs(lon) > 1.0e-3:
             return
         # hack for OBC2016
-        alt = self.ElevationMap.GetElevation(lat, lon)
+        alt = self.module('terrain').ElevationModel.GetElevation(lat, lon)
         agl = m.alt * 0.001 - alt
         agl_s = str(int(agl)) + 'm'
         self.create_vehicle_icon('VehiclePos2', 'blue', follow=False, vehicle_type='plane')
@@ -678,27 +707,32 @@ class MapModule(mp_module.MPModule):
         mtype = m.get_type()
         sysid = m.get_srcSystem()
 
-        if mtype == "HEARTBEAT":
+        if mtype == "HEARTBEAT" or mtype == "HIGH_LATENCY2":
             vname = None
-            if m.type in [mavutil.mavlink.MAV_TYPE_FIXED_WING]:
+            vtype = self.vehicle_type_override.get(sysid, m.type)
+            if vtype in [mavutil.mavlink.MAV_TYPE_FIXED_WING]:
                 vname = 'plane'
-            elif m.type in [mavutil.mavlink.MAV_TYPE_GROUND_ROVER]:
+            elif vtype in [mavutil.mavlink.MAV_TYPE_GROUND_ROVER]:
                 vname = 'rover'
-            elif m.type in [mavutil.mavlink.MAV_TYPE_SUBMARINE]:
+            elif vtype in [mavutil.mavlink.MAV_TYPE_SUBMARINE]:
                 vname = 'sub'
-            elif m.type in [mavutil.mavlink.MAV_TYPE_SURFACE_BOAT]:
+            elif vtype in [mavutil.mavlink.MAV_TYPE_SURFACE_BOAT]:
                 vname = 'boat'
-            elif m.type in [mavutil.mavlink.MAV_TYPE_QUADROTOR,
+            elif vtype in [mavutil.mavlink.MAV_TYPE_QUADROTOR,
                             mavutil.mavlink.MAV_TYPE_HEXAROTOR,
                             mavutil.mavlink.MAV_TYPE_OCTOROTOR,
-                            mavutil.mavlink.MAV_TYPE_TRICOPTER]:
+                            mavutil.mavlink.MAV_TYPE_TRICOPTER,
+                            mavutil.mavlink.MAV_TYPE_DODECAROTOR,
+                            mavutil.mavlink.MAV_TYPE_DECAROTOR]:
                 vname = 'copter'
-            elif m.type in [mavutil.mavlink.MAV_TYPE_COAXIAL]:
+            elif vtype in [mavutil.mavlink.MAV_TYPE_COAXIAL]:
                 vname = 'singlecopter'
-            elif m.type in [mavutil.mavlink.MAV_TYPE_HELICOPTER]:
+            elif vtype in [mavutil.mavlink.MAV_TYPE_HELICOPTER]:
                 vname = 'heli'
-            elif m.type in [mavutil.mavlink.MAV_TYPE_ANTENNA_TRACKER]:
+            elif vtype in [mavutil.mavlink.MAV_TYPE_ANTENNA_TRACKER]:
                 vname = 'antenna'
+            elif vtype in [mavutil.mavlink.MAV_TYPE_AIRSHIP]:
+                vname = 'blimp'
             if vname is not None:
                 self.vehicle_type_by_sysid[sysid] = vname
 
@@ -725,30 +759,44 @@ class MapModule(mp_module.MPModule):
         elif mtype == "GPS_RAW_INT" and self.map_settings.showgpspos:
             (lat, lon) = (m.lat*1.0e-7, m.lon*1.0e-7)
             if lat != 0 or lon != 0:
-                if m.vel > 300 or 'ATTITUDE' not in self.master.messages:
-                    cog = m.cog*0.01
+                if m.vel > 300 or m.get_srcSystem() not in self.lat_lon_heading:
+                    heading = m.cog*0.01
                 else:
-                    cog = math.degrees(self.master.messages['ATTITUDE'].yaw)
+                    (_,_,heading) = self.lat_lon_heading[m.get_srcSystem()]
                 self.create_vehicle_icon('GPS' + vehicle, 'blue')
-                self.map.set_position('GPS' + vehicle, (lat, lon), rotation=cog)
-
+                self.map.set_position('GPS' + vehicle, (lat, lon), rotation=heading)
+                            
         elif mtype == "GPS2_RAW" and self.map_settings.showgps2pos:
             (lat, lon) = (m.lat*1.0e-7, m.lon*1.0e-7)
             if lat != 0 or lon != 0:
                 self.create_vehicle_icon('GPS2' + vehicle, 'green')
                 self.map.set_position('GPS2' + vehicle, (lat, lon), rotation=m.cog*0.01)
 
-        elif mtype == 'GLOBAL_POSITION_INT' and self.map_settings.showahrspos:
+        elif mtype == 'GLOBAL_POSITION_INT':
             (lat, lon, heading) = (m.lat*1.0e-7, m.lon*1.0e-7, m.hdg*0.01)
-            self.lat_lon[m.get_srcSystem()] = (lat,lon)
-            if abs(lat) > 1.0e-3 or abs(lon) > 1.0e-3:
+            self.lat_lon_heading[m.get_srcSystem()] = (lat,lon,heading)
+            if self.map_settings.showahrspos:
+                if abs(lat) > 1.0e-3 or abs(lon) > 1.0e-3:
+                    self.have_global_position = True
+                    self.create_vehicle_icon('Pos' + vehicle, 'red', follow=True)
+                    if len(self.vehicle_type_by_sysid) > 1:
+                        label = str(sysid)
+                    else:
+                        label = None
+                    self.map.set_position('Pos' + vehicle, (lat, lon), rotation=heading, label=label, colour=(255,255,255))
+                    self.map.set_follow_object('Pos' + vehicle, self.is_primary_vehicle(m))
+
+        elif mtype == "HIGH_LATENCY2" and self.map_settings.showahrspos:
+            (lat, lon) = (m.latitude*1.0e-7, m.longitude*1.0e-7)
+            if lat != 0 or lon != 0:
+                cog = m.heading * 2
                 self.have_global_position = True
                 self.create_vehicle_icon('Pos' + vehicle, 'red', follow=True)
                 if len(self.vehicle_type_by_sysid) > 1:
                     label = str(sysid)
                 else:
                     label = None
-                self.map.set_position('Pos' + vehicle, (lat, lon), rotation=heading, label=label, colour=(255,255,255))
+                self.map.set_position('Pos' + vehicle, (lat, lon), rotation=cog, label=label, colour=(255,255,255))
                 self.map.set_follow_object('Pos' + vehicle, self.is_primary_vehicle(m))
 
         elif mtype == 'HOME_POSITION':
@@ -761,8 +809,8 @@ class MapModule(mp_module.MPModule):
         elif mtype == "NAV_CONTROLLER_OUTPUT":
             tlayer = 'Trajectory%u' % m.get_srcSystem()
             if (self.master.flightmode in [ "AUTO", "GUIDED", "LOITER", "RTL", "QRTL", "QLOITER", "QLAND", "FOLLOW", "ZIGZAG" ] and
-                m.get_srcSystem() in self.lat_lon):
-                (lat,lon) = self.lat_lon[m.get_srcSystem()]
+                m.get_srcSystem() in self.lat_lon_heading):
+                (lat,lon,_) = self.lat_lon_heading[m.get_srcSystem()]
                 trajectory = [ (lat, lon),
                                 mp_util.gps_newpos(lat, lon, m.target_bearing, m.wp_dist) ]
                 self.map.add_object(mp_slipmap.SlipPolygon('trajectory',
@@ -776,10 +824,10 @@ class MapModule(mp_module.MPModule):
 
         elif mtype == "POSITION_TARGET_GLOBAL_INT":
             # FIXME: base this off SYS_STATUS.MAV_SYS_STATUS_SENSOR_XY_POSITION_CONTROL?
-            if not m.get_srcSystem() in self.lat_lon:
+            if not m.get_srcSystem() in self.lat_lon_heading:
                 return
             tlayer = 'PostionTarget%u' % m.get_srcSystem()
-            (lat,lon) = self.lat_lon[m.get_srcSystem()]
+            (lat,lon,_) = self.lat_lon_heading[m.get_srcSystem()]
             if (self.master.flightmode in [ "AUTO", "GUIDED", "LOITER", "RTL", "QRTL", "QLOITER", "QLAND", "FOLLOW" ]):
                 lat_float = m.lat_int*1e-7
                 lon_float = m.lon_int*1e-7

@@ -11,7 +11,7 @@ if mp_util.has_wxpython:
 
 class FakeGPSModule(mp_module.MPModule):
     def __init__(self, mpstate):
-        super(FakeGPSModule, self).__init__(mpstate, "fakegps")
+        super(FakeGPSModule, self).__init__(mpstate, "fakegps", public = True)
         self.last_send = time.time()
         self.FakeGPS_settings = mp_settings.MPSettings([("nsats", int, 16),
                                                         ("lat", float, -35.363261),
@@ -31,6 +31,13 @@ class FakeGPSModule(mp_module.MPModule):
                                            MPMenuItem('SetPos (with alt)', 'SetPosAlt', '# fakegps setpos ',
                                                     handler=MPMenuCallTextDialog(title='Altitude (m)', default=self.mpstate.settings.guidedalt))])
                 map.add_menu(menu)
+        self.position = mp_util.mp_position()
+
+    def get_location(self):
+        '''access to location for other modules'''
+        return (self.FakeGPS_settings.lat,
+                self.FakeGPS_settings.lon,
+                self.FakeGPS_settings.alt)
 
     def cmd_FakeGPS(self, args):
         '''fakegps command parser'''
@@ -57,6 +64,14 @@ class FakeGPSModule(mp_module.MPModule):
         if len(args) > 0:
             self.FakeGPS_settings.alt = float(args[0])
 
+        # provide position to other modules
+        self.position.latitude = lat
+        self.position.longitude = lon
+        self.position.altitude = self.FakeGPS_settings.alt
+        self.position.timestamp = time.time()
+        self.mpstate.position = self.position
+            
+
     def get_gps_time(self, tnow):
         '''return gps_week and gps_week_ms for current time'''
         leapseconds = 18
@@ -71,6 +86,8 @@ class FakeGPSModule(mp_module.MPModule):
 
     def idle_task(self):
         '''called on idle'''
+        if self.master is None or self.FakeGPS_settings.rate <= 0:
+            return
         now = time.time()
         if now - self.last_send < 1.0 / self.FakeGPS_settings.rate:
             return

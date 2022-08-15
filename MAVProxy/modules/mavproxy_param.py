@@ -1,11 +1,11 @@
 #!/usr/bin/env python
 '''param command handling'''
 
-import time, os, fnmatch, time, struct, sys
+import time, os, fnmatch, struct, sys
 from pymavlink import mavutil, mavparm
 from MAVProxy.modules.lib import mp_util
 from MAVProxy.modules.lib import mp_module
-from MAVProxy.modules.lib import multiproc
+from MAVProxy.modules.lib import param_help
 if mp_util.has_wxpython:
     from MAVProxy.modules.lib.mp_menu import *
 
@@ -29,7 +29,6 @@ class ParamState:
         self.vehicle_name = vehicle_name
         self.parm_file = parm_file
         self.fetch_set = None
-        self.xml_filepath = None
         self.new_sysid_timestamp = time.time()
         self.autopilot_type_by_sysid = {}
         self.param_types = {}
@@ -39,6 +38,8 @@ class ParamState:
         self.ftp_send_param = None
         self.mpstate = mpstate
         self.sysid = sysid
+        self.param_help = param_help.ParamHelp()
+        self.param_help.vehicle_name = vehicle_name
 
     def use_ftp(self):
         '''return true if we should try ftp for download'''
@@ -142,162 +143,11 @@ class ParamState:
                         self.fetch_set.add(idx)
                         count += 1
 
-    def param_help_download(self):
-        '''download XML files for parameters'''
-        files = []
-        for vehicle in ['Rover', 'ArduCopter', 'ArduPlane', 'ArduSub', 'AntennaTracker']:
-            url = 'http://autotest.ardupilot.org/Parameters/%s/apm.pdef.xml.gz' % vehicle
-            path = mp_util.dot_mavproxy("%s.xml" % vehicle)
-            files.append((url, path))
-            url = 'http://autotest.ardupilot.org/%s-defaults.parm' % vehicle
-            if vehicle != 'AntennaTracker':
-                # defaults not generated for AntennaTracker ATM
-                path = mp_util.dot_mavproxy("%s-defaults.parm" % vehicle)
-                files.append((url, path))
-        try:
-            child = multiproc.Process(target=mp_util.download_files, args=(files,))
-            child.start()
-        except Exception as e:
-            print(e)
-
     def param_use_xml_filepath(self, filepath):
-        self.xml_filepath = filepath
-
-    def param_help_tree(self):
-        '''return a "help tree", a map between a parameter and its metadata.  May return None if help is not available'''
-        if self.xml_filepath is not None:
-            print("param: using xml_filepath=%s" % self.xml_filepath)
-            path = self.xml_filepath
-        else:
-            if self.vehicle_name is None:
-                print("Unknown vehicle type")
-                return None
-            path = mp_util.dot_mavproxy("%s.xml" % self.vehicle_name)
-            if not os.path.exists(path):
-                print("Please run 'param download' first (vehicle_name=%s)" % self.vehicle_name)
-                return None
-        if not os.path.exists(path):
-            print("Param XML (%s) does not exist" % path)
-            return None
-        xml = open(path,'rb').read()
-        from lxml import objectify
-        objectify.enable_recursive_str()
-        tree = objectify.fromstring(xml)
-        htree = {}
-        for p in tree.vehicles.parameters.param:
-            n = p.get('name').split(':')[1]
-            htree[n] = p
-        for lib in tree.libraries.parameters:
-            for p in lib.param:
-                n = p.get('name')
-                htree[n] = p
-        return htree
+        self.param_help.xml_filepath = filepath
 
     def param_set_xml_filepath(self, args):
-        self.xml_filepath = args[0]
-
-    def param_apropos(self, args):
-        '''search parameter help for a keyword, list those parameters'''
-        if len(args) == 0:
-            print("Usage: param apropos keyword")
-            return
-
-        htree = self.param_help_tree()
-        if htree is None:
-            return
-
-        contains = {}
-        for keyword in args:
-            keyword = keyword.lower()
-            for param in htree.keys():
-                if str(htree[param]).lower().find(keyword) != -1:
-                    contains[param] = True
-        for param in contains.keys():
-            print("%s" % (param,))
-
-    def param_check(self, args):
-        '''Check through parameters for obvious misconfigurations'''
-        problems_found = False
-        htree = self.param_help_tree()
-        if htree is None:
-            return
-        for param in self.mav_param.keys():
-            if param.startswith("SIM_"):
-                # no documentation for these ATM
-                continue
-            value = self.mav_param[param]
-#            print("%s: %s" % (param, str(value)))
-            try:
-                help = htree[param]
-            except KeyError:
-                print("%s: not found in documentation" % (param,))
-                problems_found = True
-                continue
-
-            # we'll ignore the Values field if there's a bitmask field
-            # involved as they're usually just examples.
-            has_bitmask = False
-            for f in getattr(help, "field", []):
-                if f.get('name') == "Bitmask":
-                    has_bitmask = True
-                    break
-            if not has_bitmask:
-                values = self.get_Values_from_help(help)
-                if len(values) == 0:
-                    # no prescribed values list
-                    continue
-                value_values = [float(x.get("code")) for x in values]
-                if value not in value_values:
-                    print("%s: value %f not in Values (%s)" %
-                          (param, value, str(value_values)))
-                    problems_found = True
-
-        if problems_found:
-            print("Remember to `param download` before trusting the checking!  Also, remember that parameter documentation is for *master*!")
-
-    def get_Values_from_help(self, help):
-        children = help.getchildren()
-        if len(children) == 0:
-            return []
-        vchild = children[0]
-        return vchild.getchildren()
-
-    def param_help(self, args):
-        '''show help on a parameter'''
-        if len(args) == 0:
-            print("Usage: param help PARAMETER_NAME")
-            return
-
-        htree = self.param_help_tree()
-        if htree is None:
-            return
-
-        for h in args:
-            h = h.upper()
-            if h in htree:
-                help = htree[h]
-                print("%s: %s\n" % (h, help.get('humanName')))
-                print(help.get('documentation'))
-                try:
-                    print("\n")
-                    for f in help.field:
-                        print("%s : %s" % (f.get('name'), str(f)))
-                except Exception as e:
-                    pass
-                try:
-                    # The entry "values" has been blatted by a cython
-                    # function at this point, so we instead get the
-                    # "values" by offset rather than name.
-                    values = self.get_Values_from_help(help)
-                    if len(values):
-                        print("\nValues: ")
-                        for v in values:
-                            print("\t%s : %s" % (v.get('code'), str(v)))
-                except Exception as e:
-                    print("Caught exception %s" % repr(e))
-                    pass
-            else:
-                print("Parameter '%s' not found in documentation" % h)
+        self.param_use_xml_filepath(args[0])
 
     def status(self, master, mpstate):
         return(len(self.mav_param_set), self.mav_param_count)
@@ -311,7 +161,7 @@ class ParamState:
             return
         self.ftp_started = True
         self.ftp_count = None
-        ftp.cmd_get(["@PARAM/param.pck"], callback=self.ftp_callback, callback_progress=self.ftp_callback_progress)
+        ftp.cmd_get(["@PARAM/param.pck?withdefaults=1"], callback=self.ftp_callback, callback_progress=self.ftp_callback_progress)
 
     def log_params(self, params):
         '''log PARAM_VALUE messages so that we can extract parameters from a tlog when using ftp download'''
@@ -351,7 +201,7 @@ class ParamState:
             buf = fh.read(6)
             fh.seek(ofs)
             magic2,num_params,total_params = struct.unpack("<HHH", buf)
-            if magic2 == 0x671b:
+            if magic2 == 0x671b or magic2 == 0x671c:
                 self.ftp_count = total_params
         # approximate count
         if self.ftp_count is not None:
@@ -369,11 +219,13 @@ class ParamState:
             return
 
         magic = 0x671b
+        magic_defaults = 0x671c
         data = fh.read()
         magic2,num_params,total_params = struct.unpack("<HHH", data[0:6])
-        if magic != magic2:
+        if magic != magic2 and magic_defaults != magic2:
             print("paramftp: bad magic 0x%x expected 0x%x" % (magic2, magic))
             return
+        with_defaults = magic2 == magic_defaults
         data = data[6:]
 
         # mapping of data type to type length and format
@@ -386,6 +238,8 @@ class ParamState:
 
         count = 0
         params = []
+        if with_defaults:
+            defaults = []
 
         if sys.version_info.major < 3:
             pad_byte = chr(0)
@@ -404,22 +258,35 @@ class ParamState:
 
             ptype, plen = struct.unpack("<BB", data[0:2])
             flags = (ptype>>4) & 0x0F
+            has_default = with_defaults and (flags&1) != 0
             ptype &= 0x0F
+
 
             if not ptype in data_types:
                 print("paramftp: bad type 0x%x" % ptype)
                 return
 
             (type_len, type_format) = data_types[ptype]
+            default_len = type_len if has_default else 0
 
             name_len = ((plen>>4) & 0x0F) + 1
             common_len = (plen & 0x0F)
             name = last_name[0:common_len] + data[2:2+name_len]
-            vdata = data[2+name_len:2+name_len+type_len]
+            vdata = data[2+name_len:2+name_len+type_len+default_len]
             last_name = name
-            data = data[2+name_len+type_len:]
-            v, = struct.unpack("<" + type_format, vdata)
-            params.append((name, v, ptype))
+            data = data[2+name_len+type_len+default_len:]
+            if with_defaults:
+                if has_default:
+                    v1,v2, = struct.unpack("<" + type_format + type_format, vdata)
+                    params.append((name, v1, ptype))
+                    defaults.append((name, v2, ptype))
+                else:
+                    v, = struct.unpack("<" + type_format, vdata)
+                    params.append((name, v, ptype))
+                    defaults.append((name, v, ptype))
+            else:
+                v, = struct.unpack("<" + type_format, vdata)
+                params.append((name, v, ptype))
             count += 1
 
         if count != total_params:
@@ -447,6 +314,17 @@ class ParamState:
         if self.logdir is not None:
             self.mav_param.save(os.path.join(self.logdir, self.parm_file), '*', verbose=True)
         self.log_params(params)
+
+        if with_defaults:
+            defaults_path = os.path.join(self.logdir, "defaults.parm") if self.logdir else "defaults.parm"
+            defparm = mavparm.MAVParmDict()
+            for (name, v, ptype) in defaults:
+                name = str(name.decode('utf-8'))
+                defparm[name] = v
+            defparm.save(defaults_path, '*', verbose=False)
+            print("Saved %u defaults to %s" % (len(defaults), defaults_path))
+
+
 
     def fetch_all(self, master):
         '''force refetch of parameters'''
@@ -502,19 +380,22 @@ class ParamState:
         elif args[0] == "diff":
             wildcard = '*'
             if len(args) < 2 or args[1].find('*') != -1:
-                if self.vehicle_name is None:
-                    print("Unknown vehicle type")
-                    return
-                filename = mp_util.dot_mavproxy("%s-defaults.parm" % self.vehicle_name)
+                filename = os.path.join(self.logdir, "defaults.parm")
                 if not os.path.exists(filename):
-                    print("Please run 'param download' first (vehicle_name=%s)" % self.vehicle_name)
-                    return
+                    if self.vehicle_name is None:
+                        print("Unknown vehicle type")
+                        return
+                    filename = mp_util.dot_mavproxy("%s-defaults.parm" % self.vehicle_name)
+                    if not os.path.exists(filename):
+                        print("Please run 'param download' first (vehicle_name=%s)" % self.vehicle_name)
+                        return
                 if len(args) >= 2:
                     wildcard = args[1]
             else:
                 filename = args[1]
                 if len(args) == 3:
                     wildcard = args[2]
+            print("defaults path: %s" % filename)
             print("%-16.16s %12.12s %12.12s" % ('Parameter', 'Defaults', 'Current'))
             self.mav_param.diff(filename, wildcard=wildcard)
         elif args[0] == "set":
@@ -522,7 +403,7 @@ class ParamState:
                 print("Usage: param set PARMNAME VALUE")
                 return
             if len(args) == 2:
-                self.mav_param.show(args[1])
+                self.param_show(args[1], self.mpstate.settings.param_docs)
                 return
             param = args[1]
             value = args[2]
@@ -576,25 +457,42 @@ class ParamState:
                 param_wildcard = "*"
             self.ftp_load(args[1].strip('"'), param_wildcard, master)
         elif args[0] == "download":
-            self.param_help_download()
+            self.param_help.param_help_download()
         elif args[0] == "apropos":
-            self.param_apropos(args[1:])
+            self.param_help.param_apropos(args[1:])
         elif args[0] == "check":
-            self.param_check(args[1:])
+            self.param_help.param_check(self.mav_param, args[1:])
         elif args[0] == "help":
-            self.param_help(args[1:])
+            self.param_help.param_help(args[1:])
         elif args[0] == "set_xml_filepath":
             self.param_set_xml_filepath(args[1:])
         elif args[0] == "show":
+            verbose = self.mpstate.settings.param_docs
             if len(args) > 1:
                 pattern = args[1]
+                if len(args) > 2 and args[2] == '-v':
+                    verbose = True
             else:
                 pattern = "*"
-            self.mav_param.show(pattern)
+            self.param_show(pattern, verbose)
         elif args[0] == "status":
             print("Have %u/%u params" % (len(self.mav_param_set), self.mav_param_count))
         else:
             print(usage)
+
+    def param_show(self, pattern, verbose):
+        '''show parameters'''
+        k = sorted(self.mav_param.keys())
+        for p in k:
+            name = str(p).upper()
+            if fnmatch.fnmatch(name, pattern.upper()):
+                value = self.mav_param.get(name)
+                s = "%-16.16s %s" % (name, value)
+                if verbose:
+                    info = self.param_help.param_info(name, value)
+                    if info is not None:
+                        s = "%-28.28s # %s" % (s, info)
+                print(s)
 
     def ftp_upload_callback(self, dlen):
         '''callback on ftp put completion'''
@@ -709,7 +607,10 @@ class ParamModule(mp_module.MPModule):
                                          MPMenuItem('Save', 'Save', '# param save ',
                                                     handler=MPMenuCallFileDialog(flags=('save', 'overwrite_prompt'),
                                                                                  title='Param Save',
-                                                                                 wildcard='ParmFiles(*.parm,*.param)|*.parm;*.param'))])
+                                                                                 wildcard='ParmFiles(*.parm,*.param)|*.parm;*.param')),
+                                         MPMenuItem('FTP', 'FTP', '# param ftp'),
+                                         MPMenuItem('Update Metadata', 'Update Metadata', '# param download'),
+                                             ])
 
     def get_component_id_list(self, system_id):
         '''get list of component IDs with parameters for a given system ID'''
@@ -736,7 +637,7 @@ class ParamModule(mp_module.MPModule):
             if os.path.exists(parmfile):
                 mpstate.mav_param.load(parmfile)
                 self.pstate[sysid].mav_param_set = set(self.mav_param.keys())
-        self.pstate[sysid].xml_filepath = self.xml_filepath
+        self.pstate[sysid].param_help.xml_filepath = self.xml_filepath
 
     def get_sysid(self):
         '''get sysid tuple to use for parameters'''
@@ -768,10 +669,14 @@ class ParamModule(mp_module.MPModule):
         self.check_new_target_system()
         sysid = self.get_sysid()
         self.pstate[sysid].vehicle_name = self.vehicle_name
+        self.pstate[sysid].param_help.vehicle_name = self.vehicle_name
         self.pstate[sysid].fetch_check(self.master)
-        if self.module('console') is not None and not self.menu_added_console:
-            self.menu_added_console = True
-            self.module('console').add_menu(self.menu)
+        if self.module('console') is not None:
+            if not self.menu_added_console:
+                self.menu_added_console = True
+                self.module('console').add_menu(self.menu)
+        else:
+            self.menu_added_console = False
 
     def cmd_param(self, args):
         '''control parameters'''

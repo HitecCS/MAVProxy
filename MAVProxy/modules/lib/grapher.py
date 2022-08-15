@@ -18,6 +18,8 @@ from pymavlink import mavutil
 import threading
 import numpy as np
 
+MAVGRAPH_DEBUG = 'MAVGRAPH_DEBUG' in os.environ
+
 colors = [ 'red', 'green', 'blue', 'orange', 'olive', 'black', 'grey', 'yellow', 'brown', 'darkcyan',
            'cornflowerblue', 'darkmagenta', 'deeppink', 'darkred']
 
@@ -360,7 +362,7 @@ class MavGraph(object):
                                 alpha=0.6,
                                 verticalalignment='center')
                 else:
-                    ax.plot_date(x[i], y[i], color=color, label=fields[i],
+                    ax.plot_date(x[i], y[i], fmt=color, label=fields[i],
                                  linestyle=linestyle, marker=marker, tz=None)
 
             empty = False
@@ -389,9 +391,12 @@ class MavGraph(object):
 
         if title is not None:
             pylab.title(title)
-            self.fig.canvas.set_window_title(title)
         else:
-            self.fig.canvas.set_window_title(fields[0])
+            title = fields[0]
+        if self.fig.canvas.manager is not None:
+            self.fig.canvas.manager.set_window_title(title)
+        else:
+            self.fig.canvas.set_window_title(title)
 
         if self.show_flightmode:
             mode_patches = []
@@ -417,16 +422,41 @@ class MavGraph(object):
         for i in range(0, len(self.fields)):
             if mtype not in self.field_types[i]:
                 continue
-            if self.instance_types[i] and hasattr(msg, 'fmt') and hasattr(msg.fmt, 'instance_field'):
-                mtype_instance = '%s[%s]' % (mtype, getattr(msg, msg.fmt.instance_field))
-                if mtype_instance not in self.instance_types[i]:
-                    continue
+
             f = self.fields[i]
+            has_instance = False
+            if mtype in self.instance_types[i]:
+                instance_field = getattr(msg,'instance_field',None)
+                if instance_field is None and hasattr(msg,'fmt'):
+                    instance_field = getattr(msg.fmt,'instance_field')
+                if instance_field is not None:
+                    ins_value = getattr(msg,instance_field,None)
+                    if ins_value is None or not str(ins_value) in self.instance_types[i][mtype]:
+                        continue
+                    if not mtype in vars or not isinstance(vars[mtype], dict):
+                        vars[mtype] = dict()
+
+                    vars[mtype][ins_value] = msg
+                    if isinstance(ins_value, str):
+                        mtype_instance = '%s[%s]' % (mtype, ins_value)
+                        mtype_instance_str = '%s["%s"]' % (mtype, getattr(msg, instance_field))
+                        f = f.replace(mtype_instance, mtype_instance_str)
+                    has_instance = True
+
             simple = self.simple_field[i]
-            if simple is not None:
-                v = getattr(vars[simple[0]], simple[1])
-            else:
-                v = mavutil.evaluate_expression(f, vars)
+            v = None
+            if simple is not None and not has_instance:
+                try:
+                    v = getattr(vars[simple[0]], simple[1])
+                except Exception as ex:
+                    if MAVGRAPH_DEBUG:
+                        print(ex)
+            if v is None:
+                try:
+                    v = mavutil.evaluate_expression(f, vars)
+                except Exception as ex:
+                    if MAVGRAPH_DEBUG:
+                        print(ex)
             if v is None:
                 continue
             if self.xaxis is None:
@@ -494,7 +524,8 @@ class MavGraph(object):
             if msg is None:
                 break
             mtype = msg.get_type()
-            all_messages[mtype] = msg
+            if not mtype in all_messages or not isinstance(all_messages[mtype],dict):
+                all_messages[mtype] = msg
             if mtype not in self.msg_types:
                 continue
             if self.condition:
@@ -512,9 +543,9 @@ class MavGraph(object):
 
     def xlim_change_check(self, idx):
         '''handle xlim change requests from queue'''
-        if not self.xlim_pipe[1].poll():
-            return
         try:
+            if not self.xlim_pipe[1].poll():
+                return
             xlim = self.xlim_pipe[1].recv()
             if xlim is None:
                 return
@@ -526,9 +557,6 @@ class MavGraph(object):
             self.fig.canvas.toolbar.push_current()
             #print("setting: ", self.graph_num, xlim)
             self.ax1.set_xlim(xlim)
-            # trigger the timer, this allows us to setup a v slow animation,
-            # which saves a lot of CPU
-            self.ani.event_source._on_timer()
 
     def xlim_timer(self):
         '''called every 0.1s to check for xlim change'''
@@ -551,13 +579,18 @@ class MavGraph(object):
         self.axes = []
         self.first_only = []
         re_caps = re.compile('[A-Z_][A-Z0-9_]+')
-        re_instance = re.compile('[A-Z_][A-Z0-9_]+\[\d+\]')
+        re_instance = re.compile('([A-Z_][A-Z0-9_]+)\[([0-9A-Z_]+)\]')
         for f in self.fields:
             caps = set(re.findall(re_caps, f))
             self.msg_types = self.msg_types.union(caps)
             self.field_types.append(caps)
             instances = set(re.findall(re_instance, f))
-            self.instance_types.append(instances)
+            itypes = dict()
+            for (itype,ivalue) in instances:
+                if not itype in itypes:
+                    itypes[itype] = set()
+                itypes[itype].add(ivalue)
+            self.instance_types.append(itypes)
             self.y.append([])
             self.x.append([])
             self.axes.append(1)

@@ -18,7 +18,7 @@ from MAVProxy.modules.mavproxy_misseditor import me_event
 MissionEditorEvent = me_event.MissionEditorEvent
 
 from MAVProxy.modules.mavproxy_misseditor import me_defines
-from MAVProxy.modules.mavproxy_map import mp_elevation
+from MAVProxy.modules.lib import mp_elevation
 
 from MAVProxy.modules.mavproxy_misseditor import button_renderer
 
@@ -39,7 +39,7 @@ ME_DIST_COL = 12
 ME_ANGLE_COL = 13
 
 class MissionEditorFrame(wx.Frame):
-    def __init__(self, state, *args, **kwds):
+    def __init__(self, state, elemodel='SRTM3', *args, **kwds):
         # begin wxGlade: MissionEditorFrame.__init__
         self.state = state
         kwds["style"] = wx.DEFAULT_FRAME_STYLE
@@ -71,7 +71,7 @@ class MissionEditorFrame(wx.Frame):
         self.__set_properties()
         self.__do_layout()
 
-        self.ElevationModel = mp_elevation.ElevationModel()
+        self.ElevationModel = mp_elevation.ElevationModel(database=elemodel)
 
 
         self.Bind(wx.EVT_TEXT_ENTER, self.on_wp_radius_enter, self.text_ctrl_wp_radius)
@@ -274,8 +274,8 @@ class MissionEditorFrame(wx.Frame):
             self.grid_mission.SetColSize(ME_LAT_COL, 100)
             self.grid_mission.SetColSize(ME_LON_COL, 100)
             self.grid_mission.SetColSize(ME_ALT_COL, 75)
-            self.grid_mission.SetColSize(ME_DIST_COL, -1)
-            self.grid_mission.SetColSize(ME_ANGLE_COL, -1)
+            self.grid_mission.SetColSize(ME_DIST_COL, 1)
+            self.grid_mission.SetColSize(ME_ANGLE_COL, 1)
 
             self.grid_mission.ForceRefresh()
         elif event.get_type() == me_event.MEGE_ADD_MISS_TABLE_ROWS:

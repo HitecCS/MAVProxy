@@ -10,6 +10,10 @@ import sys
 import platform
 import warnings
 
+import time
+from math import cos, sin, tan, atan2, sqrt, radians, degrees, pi, log, fmod
+
+
 # Some platforms (CYGWIN and others) many not have the wx library
 # use imp to see if wx is on the path
 has_wxpython = False
@@ -387,6 +391,8 @@ def decode_devid(devid, pname):
         0x10 : "IST8308",
         0x11 : "RM3100",
         0x12 : "RM3100_2",
+        0x13 : "MMC5883",
+        0x14 : "AK09918",
         }
 
     imu_types = {
@@ -417,6 +423,11 @@ def decode_devid(devid, pname):
         0x32 : "INS_SERIAL",
         0x33 : "INS_ICM40609",
         0x34 : "INS_ICM42688",
+        0x35 : "INS_ICM42605",
+        0x37 : "INS_IIM42652",
+        0x38 : "INS_BMI270",
+        0x39 : "INS_BMI085",
+        0x3A : "INS_ICM42670",
         }
 
     baro_types = {
@@ -433,6 +444,9 @@ def decode_devid(devid, pname):
         0x0B : "BARO_MS5611",
         0x0C : "BARO_SPL06",
         0x0D : "BARO_UAVCAN",
+        0x0E : "BARO_MSP",
+        0x0F : "BARO_ICP101XX",
+        0x10 : "BARO_ICP201XX",
     }
 
     airspeed_types = {
@@ -475,3 +489,42 @@ def decode_devid(devid, pname):
         bustypes.get(bus_type,"UNKNOWN"), bus_type,
         bus, address, address, devtype, devtype, decoded_devname,
         devid))
+
+
+def decode_flight_sw_version(flight_sw_version):
+    '''decode 32 bit flight_sw_version mavlink parameter - corresponds to encoding in ardupilot GCS_MAVLINK::send_autopilot_version'''
+    fw_type_id = (flight_sw_version >>  0) % 256
+    patch      = (flight_sw_version >>  8) % 256
+    minor      = (flight_sw_version >> 16) % 256
+    major      = (flight_sw_version >> 24) % 256
+    if (fw_type_id==0):
+        fw_type="dev"
+    elif (fw_type_id==64):
+        fw_type="alpha"
+    elif (fw_type_id==128):
+        fw_type="beta"
+    elif (fw_type_id==192):
+        fw_type="rc"
+    elif (fw_type_id==255):
+        fw_type="official"
+    else:
+        fw_type="undefined"
+    return major,minor,patch,fw_type
+
+class mp_position(object):
+    '''a position object from a local provider such as a NMEA GPS module'''
+    def __init__(self):
+        self.timestamp = None
+        self.latitude = None
+        self.longitude = None
+        self.altitude = None
+        self.ground_course = None
+        self.ground_speed = None
+        self.num_sats = None
+
+    def __str__(self):
+        return "%u satellites age=%.1fs lat=%.9f lon=%.9f alt=%.3f m spd=%.2f m/s course=%.2f deg" % (
+            self.num_sats,
+            time.time() - self.timestamp,
+            self.latitude, self.longitude, self.altitude,
+            self.ground_speed, self.ground_course)

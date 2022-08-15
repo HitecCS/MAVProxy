@@ -1,7 +1,7 @@
 from setuptools import setup
 import os, platform, sys
 
-version = "1.8.40"
+version = "1.8.53"
 
 def package_files(directory):
     paths = []
@@ -26,15 +26,15 @@ package_data.extend(package_files('MAVProxy/modules/mavproxy_cesium/app'))
 # as that breaks the pip install. It seems that pip is not smart enough to
 # use the system versions of these dependencies, so it tries to download and install
 # large numbers of modules like numpy etc which may be already installed
-requirements=['pymavlink>=2.3.3',
-              'pyserial>=3.0']
+requirements=['pymavlink>=2.4.14',
+              'pyserial>=3.0',
+              'numpy']
 
 if platform.system() == "Darwin":
     # on MacOS we can have a more complete requirements list
     requirements.extend(['billiard>=3.5.0',
                          'gnureadline',
                          'matplotlib',
-                         'numpy',
                          'opencv-python',
                          'lxml',
                          'future',
@@ -84,6 +84,8 @@ on how to use MAVProxy.''',
                 'MAVProxy.modules.mavproxy_cesium',
                 'MAVProxy.modules.mavproxy_joystick',
                 'MAVProxy.modules.mavproxy_magical',
+                'MAVProxy.modules.mavproxy_optitrack',
+                'MAVProxy.modules.mavproxy_nokov',
                 'MAVProxy.modules.lib',
                 'MAVProxy.modules.lib.ANUGA',
                 'MAVProxy.modules.lib.MacOS',

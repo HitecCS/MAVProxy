@@ -97,12 +97,14 @@ colour_map_plane = {}
 colour_map_rover = {}
 colour_map_tracker = {}
 colour_map_submarine = {}
+colour_map_blimp = {}
 
 for mytuple in ((mavutil.mode_mapping_apm.values(),colour_map_plane),
                 (mavutil.mode_mapping_acm.values(),colour_map_copter),
                 (mavutil.mode_mapping_rover.values(),colour_map_rover),
                 (mavutil.mode_mapping_tracker.values(),colour_map_tracker),
                 (mavutil.mode_mapping_sub.values(),colour_map_submarine),
+                (mavutil.mode_mapping_blimp.values(),colour_map_blimp),
 ):
     (mode_names, colour_map) = mytuple
     i=0
@@ -134,6 +136,8 @@ def colourmap_for_mav_type(mav_type):
         map = colour_map_tracker
     if mav_type == mavutil.mavlink.MAV_TYPE_SUBMARINE:
         map = colour_map_submarine
+    if mav_type == mavutil.mavlink.MAV_TYPE_AIRSHIP:
+        map = colour_map_blimp
     if map is None:
         print("No colormap for mav_type=%u" % (mav_type,))
         # we probably don't have a valid mode map, so returning
@@ -164,9 +168,10 @@ def display_waypoints(wploader, map):
 colour_expression_exceptions = dict()
 colour_source_min = 255
 colour_source_max = 0
+colour_over_255 = 0
 
 def colour_for_point(mlog, point, instance, options):
-    global colour_expression_exceptions, colour_source_max, colour_source_min
+    global colour_expression_exceptions, colour_source_max, colour_source_min, colour_over_255
     '''indicate a colour to be used to plot point'''
     source = getattr(options, "colour_source", "flightmode")
     if source == "flightmode":
@@ -205,6 +210,7 @@ def colour_for_point(mlog, point, instance, options):
     elif v > 255:
         print("colour expression returned %d (> 255)" % v)
         v = 255
+        colour_over_255 += 1
 
     if v < colour_source_min:
         colour_source_min = v
@@ -401,7 +407,7 @@ def mavflightview_mav(mlog, options=None, flightmode_selections=[]):
                 if ekf_counter % options.ekf_sample != 0:
                     continue
                 (lat, lng) = pos
-            elif type in ['NKF1']:
+            elif type in ['NKF1','XKF1']:
                 pos = mavextra.ekf1_pos(m)
                 if pos is None:
                     continue
@@ -419,6 +425,9 @@ def mavflightview_mav(mlog, options=None, flightmode_selections=[]):
                 (lat, lng) = (m.Lat, m.Lng)
             elif type == 'SIM':
                 (lat, lng) = (m.Lat, m.Lng)
+            elif type == 'GUID':
+                if (m.Type == 0):
+                    (lat, lng) = (m.pX*1.0e-7, m.pY*1.0e-7)
             else:
                 if hasattr(m,'Lat'):
                     lat = m.Lat
@@ -465,7 +474,7 @@ def mavflightview_mav(mlog, options=None, flightmode_selections=[]):
 
     return [path, wp, fen, used_flightmodes, getattr(mlog, 'mav_type',None), instances]
 
-def mavflightview_show(path, wp, fen, used_flightmodes, mav_type, options, instances, title=None, timelim_pipe=None):
+def mavflightview_show(path, wp, fen, used_flightmodes, mav_type, options, instances, title=None, timelim_pipe=None, show_waypoints=True):
     if not title:
         title='MAVFlightView'
 
@@ -490,9 +499,16 @@ def mavflightview_show(path, wp, fen, used_flightmodes, mav_type, options, insta
     path_objs = []
     for i in range(len(path)):
         if len(path[i]) != 0:
-            path_objs.append(mp_slipmap.SlipPolygon('FlightPath[%u]-%s' % (i,title), path[i], layer='FlightPath',
-                                                    linewidth=2, colour=(255,0,180)))
-    plist = wp.polygon_list()
+            path_objs.append(mp_slipmap.SlipPolygon(
+                'FlightPath[%u]-%s' % (i,title),
+                path[i],
+                layer='FlightPath',
+                linewidth=2,
+                showlines=(not getattr(options, "no_show_lines", False)),
+                colour=(255,0,180)))
+    plist = []
+    if options.show_waypoints:
+        plist = wp.polygon_list()
     mission_obj = None
     if len(plist) > 0:
         mission_obj = []
@@ -523,7 +539,7 @@ def mavflightview_show(path, wp, fen, used_flightmodes, mav_type, options, insta
         else:
             map = mp_slipmap.MPSlipMap(title=title,
                                        service=options.service,
-                                       elevation=True,
+                                       elevation="SRTM3",
                                        width=600,
                                        height=600,
                                        ground_width=ground_width,
@@ -562,7 +578,7 @@ def mavflightview_show(path, wp, fen, used_flightmodes, mav_type, options, insta
             tuples = [ (t, map_colours[instances[t]]) for t in instances.keys() ]
             map.add_object(mp_slipmap.SlipFlightModeLegend("legend", tuples))
         else:
-            print("colour-source: min=%f max=%f" % (colour_source_min, colour_source_max))
+            print("colour-source: min=%f max=%f over-255=%u" % (colour_source_min, colour_source_max, colour_over_255))
 
 
 def load_kml(kml):
@@ -623,6 +639,7 @@ class mavflightview_options(object):
         self.rate = 0
         self._flightmodes = []
         self.colour_source = 'flightmode'
+        self.show_waypoints = True
 
 if __name__ == "__main__":
     multiproc.freeze_support()
@@ -652,8 +669,20 @@ if __name__ == "__main__":
     parser.add_option("--colour-source", type="str", default="flightmode", help="expression with range 0f..255f used for point colour")
     parser.add_option("--no-flightmode-legend", action="store_false", default=True, dest="show_flightmode_legend", help="hide legend for colour used for flight modes")
     parser.add_option("--kml", default=None, help="add kml overlay")
+    parser.add_option("--hide-waypoints", dest='show_waypoints', action='store_false', help="do not show waypoints", default=True)
+    parser.add_option("--no-show-lines", action="store_true", default=False)
 
     (opts, args) = parser.parse_args()
+
+
+    try:
+        import faulthandler, signal
+        try:
+            faulthandler.register(signal.SIGUSR1)
+        except AttributeError as e:
+            pass
+    except ImportError:
+        pass
 
     if len(args) < 1:
         print("Usage: mavflightview.py [options] <LOGFILE...>")

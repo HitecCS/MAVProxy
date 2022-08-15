@@ -14,10 +14,12 @@ import os
 import fnmatch
 import threading
 import shlex
+import traceback
 from math import *
 from MAVProxy.modules.lib import multiproc
 from MAVProxy.modules.lib import rline
 from MAVProxy.modules.lib import wxconsole
+from MAVProxy.modules.lib import param_help
 from MAVProxy.modules.lib.graph_ui import Graph_UI
 from pymavlink.mavextra import *
 from MAVProxy.modules.lib.mp_menu import *
@@ -100,17 +102,21 @@ class MEState(object):
               MPSetting('legend', str, 'upper left', 'legend position'),
               MPSetting('legend2', str, 'upper right', 'legend2 position'),
               MPSetting('title', str, None, 'Graph title'),
+              MPSetting('debug', int, 0, 'debug level'),
+              MPSetting('paramdocs', bool, True, 'show param docs'),
               ]
             )
 
         self.mlog = None
+        self.mav_param = None
         self.filename = None
         self.command_map = command_map
         self.completions = {
             "set"       : ["(SETTING)"],
             "condition" : ["(VARIABLE)"],
             "graph"     : ['(VARIABLE) (VARIABLE) (VARIABLE) (VARIABLE) (VARIABLE) (VARIABLE) (VARIABLE) (VARIABLE) (VARIABLE) (VARIABLE) (VARIABLE) (VARIABLE)'],
-            "map"       : ['(VARIABLE) (VARIABLE) (VARIABLE) (VARIABLE) (VARIABLE)']
+            "map"       : ['(VARIABLE) (VARIABLE) (VARIABLE) (VARIABLE) (VARIABLE)'],
+            "param"     : ['download', 'check', 'help (PARAMETER)'],
             }
         self.aliases = {}
         self.graphs = []
@@ -121,6 +127,7 @@ class MEState(object):
         self.parent_pipe_recv_console,self.child_pipe_send_console = multiproc.Pipe(duplex=False)
         #pipe for creating graphs (such as from the save dialog box)
         self.parent_pipe_recv_graph,self.child_pipe_send_graph = multiproc.Pipe(duplex=False)
+        self.param_help = param_help.ParamHelp()
         
         tConsoleWrite = threading.Thread(target=self.pipeRecvConsole)
         tConsoleWrite.daemon = True
@@ -128,7 +135,7 @@ class MEState(object):
         tGraphWrite = threading.Thread(target=self.pipeRecvGraph)
         tGraphWrite.daemon = True
         tGraphWrite.start()
-                
+
     def pipeRecvConsole(self):
         '''watch for piped data from save dialog'''
         try:
@@ -284,7 +291,11 @@ def load_graph_xml(xml, filename, load_all=False):
         expressions = [e.text for e in g.expression]
         if load_all:
             if not name in names:
-                ret.append(GraphDefinition(name, expressions[0], g.description.text, expressions, filename))
+                if hasattr(g,'description'):
+                    description = g.description.text
+                else:
+                    description = ''
+                ret.append(GraphDefinition(name, expressions[0], description, expressions, filename))
             names.add(name)
             continue
         if have_graph(name):
@@ -292,7 +303,11 @@ def load_graph_xml(xml, filename, load_all=False):
         for e in expressions:
             e = xml_unescape(e)
             if expression_ok(e):
-                ret.append(GraphDefinition(name, e, g.description.text, expressions, filename))
+                if hasattr(g,'description'):
+                    description = g.description.text
+                else:
+                    description = ''
+                ret.append(GraphDefinition(name, e, description, expressions, filename))
                 break
     return ret
 
@@ -368,6 +383,8 @@ def cmd_graph(args):
     else:
         expression = ' '.join(args)
         mestate.last_graph = GraphDefinition(mestate.settings.title, expression, '', [expression], None)
+    if mestate.settings.debug > 0:
+        print("Adding graph: %s" % mestate.last_graph.expression)
     grui.append(Graph_UI(mestate))
     grui[-1].display_graph(mestate.last_graph, flightmode_colours())
     global xlimits
@@ -638,6 +655,10 @@ events = {
     71 : "DATA_ZIGZAG_STORE_A",
     72 : "DATA_ZIGZAG_STORE_B",
     73 : "DATA_LAND_REPO_ACTIVE",
+
+    80 : "FENCE_FLOOR_ENABLE",
+    81 : "FENCE_FLOOR_DISABLE",
+
     163 : "DATA_SURFACED",
     164 : "DATA_NOT_SURFACED",
     165 : "DATA_BOTTOMED",
@@ -746,16 +767,99 @@ def cmd_messages(args):
             print("%s %s" % (timestring(m), mstr))
     mestate.mlog.rewind()
 
+def extract_files():
+    '''extract all FILE messages as a dictionary of files'''
+    sequences = {}
+    mestate.mlog.rewind()
+    while True:
+        m = mestate.mlog.recv_match(type=['FILE'], condition=mestate.settings.condition)
+        if m is None:
+            break
+        if not m.FileName in sequences:
+            sequences[m.FileName] = set()
+        sequences[m.FileName].add((m.Offset, m.Data[:m.Length]))
+    ret = {}
+    for f in sequences:
+        ofs = 0
+        seen = set()
+        seq = sorted(list(sequences[f]), key=lambda t: t[0])
+        ret[f] = bytes()
+        for t in seq:
+            if t[0] in seen:
+                continue
+            seen.add(t[0])
+            if t[0] != ofs:
+                print("Gap in %s at %u" % (f, ofs))
+            ret[f] += t[1]
+            ofs = t[0]+len(t[1])
+
+    mestate.mlog.rewind()
+    return ret
+
+def cmd_file(args):
+    '''show files'''
+    files = extract_files()
+    if len(args) == 0:
+        # list
+        for n in sorted(files.keys()):
+            print("%s (length %u)" % (n, len(files[n])))
+        return
+    fname = args[0]
+    if not fname in files:
+        print("File %s not found" % fname)
+        return
+    if len(args) == 1:
+        # print on terminal
+        print(files[fname].decode('utf-8'))
+    else:
+        # save to file
+        dest = args[1]
+        open(dest, "wb").write(files[fname])
+        print("Saved %s to %s" % (fname, dest))
+
+def set_vehicle_name():
+    mapping = { mavutil.mavlink.MAV_TYPE_GROUND_ROVER : "Rover",
+                mavutil.mavlink.MAV_TYPE_FIXED_WING : "ArduPlane",
+                mavutil.mavlink.MAV_TYPE_QUADROTOR : "ArduCopter",
+                mavutil.mavlink.MAV_TYPE_ANTENNA_TRACKER : "AntennaTracker",
+                mavutil.mavlink.MAV_TYPE_SUBMARINE : "ArduSub",
+                }
+    mestate.param_help.vehicle_name = mapping.get(mestate.mlog.mav_type, None)
+
 def cmd_param(args):
     '''show parameters'''
+    verbose = mestate.settings.paramdocs
     if len(args) > 0:
+        if args[0] == 'help':
+            set_vehicle_name()
+            mestate.param_help.param_help(args[1:])
+            return
+        if args[0] == 'download':
+            mestate.param_help.param_help_download()
+            return
+        if args[0] == 'check':
+            set_vehicle_name()
+            mestate.param_help.param_check(mestate.mlog.params, args[1:])
+            return
+        if args[0] == 'show':
+            # habits from mavproxy
+            cmd_param(args[1:])
+            return
         wildcard = args[0]
+        if len(args) > 1 and args[1] == "-v":
+            verbose = True
     else:
         wildcard = '*'
     k = sorted(mestate.mlog.params.keys())
     for p in k:
         if fnmatch.fnmatch(str(p).upper(), wildcard.upper()):
-            print("%-16.16s %f" % (str(p), mestate.mlog.params[p]))
+            s = "%-16.16s %f" % (str(p), mestate.mlog.params[p])
+            if verbose:
+                set_vehicle_name()
+                info = mestate.param_help.param_info(p, mestate.mlog.params[p])
+                if info is not None:
+                    s += " # %s" % info
+            print(s)
 
 def cmd_paramchange(args):
     '''show param changes'''
@@ -797,7 +901,8 @@ def cmd_devid(args):
     params = mestate.mlog.params
     k = sorted(params.keys())
     for p in k:
-        if p.startswith('COMPASS_DEV_ID') or p.startswith('COMPASS_PRIO'):
+        if p.startswith('COMPASS_DEV_ID') or p.startswith('COMPASS_PRIO') or (
+                p.startswith('COMPASS') and p.endswith('DEV_ID')):
             mp_util.decode_devid(params[p], p)
         if p.startswith('INS_') and p.endswith('_ID'):
             mp_util.decode_devid(params[p], p)
@@ -852,7 +957,19 @@ def loadfile(args):
     global flightmodes
     flightmodes = mlog.flightmode_list()
 
+    mestate.mav_param = mlog.params
+
     setup_menus()
+
+def print_caught_exception(e):
+    if sys.version_info[0] >= 3:
+        ret = "%s\n" % e
+        ret += ''.join(traceback.format_exception(type(e),
+                                                  value=e,
+                                                  tb=e.__traceback__))
+        print(ret)
+    else:
+        print(traceback.format_exc(e))
 
 def process_stdin(line):
     '''handle commands from user'''
@@ -863,7 +980,12 @@ def process_stdin(line):
     if not line:
         return
 
-    args = shlex.split(line)
+    try:
+        args = shlex.split(line)
+    except ValueError as e:
+        print_caught_exception(e)
+        return
+
     cmd = args[0]
     if cmd == 'help':
         k = command_map.keys()
@@ -883,6 +1005,8 @@ def process_stdin(line):
         fn(args[1:])
     except Exception as e:
         print("ERROR in command %s: %s" % (args[1:], str(e)))
+        if mestate.settings.debug > 0:
+            print_caught_exception(e)
 
 def input_loop():
     '''wait for user input'''
@@ -894,6 +1018,21 @@ def input_loop():
             mestate.exit = True
             sys.exit(1)
         mestate.input_queue.put(line)
+
+new_matplotlib = False
+mversion = matplotlib.__version__.split('.')
+matplotlib_major = mversion[0]
+matplotlib_minor = mversion[1]
+if int(matplotlib_major) > 3:
+    new_matplotlib = True
+elif (int(matplotlib_major) >= 3 and int(matplotlib_minor) >= 5):
+    new_matplotlib = True
+
+def epoch_time(num):
+    '''converts a number into an epoch time - compatability wrapper'''
+    if new_matplotlib:
+        return matplotlib.dates.num2date(num).timestamp()
+    return matplotlib.dates.num2epoch(num)
 
 def main_loop():
     '''main processing loop, display graphs and maps'''
@@ -919,9 +1058,10 @@ def main_loop():
                 xlimits.last_xlim = xlim
                 from dateutil.tz import tzlocal
                 localtimezone = tzlocal()
-                tzofs = localtimezone.utcoffset(datetime.datetime.now()).total_seconds()
-                xlimits.xlim_low = matplotlib.dates.num2epoch(xlim[0]) - tzofs
-                xlimits.xlim_high = matplotlib.dates.num2epoch(xlim[1]) - tzofs
+                tbase = epoch_time(xlim[0])
+                tzofs = localtimezone.utcoffset(datetime.datetime.utcfromtimestamp(tbase)).total_seconds()
+                xlimits.xlim_low = epoch_time(xlim[0]) - tzofs
+                xlimits.xlim_high = epoch_time(xlim[1]) - tzofs
                 
                 if mestate.settings.sync_xmap:
                     remlist = []
@@ -959,6 +1099,7 @@ command_map = {
     'stats'      : (cmd_stats,     'show statistics on the log'),
     'magfit'     : (cmd_magfit,    'fit mag parameters to WMM'),
     'dump'       : (cmd_dump,      'dump messages from log'),
+    'file'       : (cmd_file,      'show files'),
     }
 
 def progress_bar(pct):

@@ -13,6 +13,7 @@ from MAVProxy.modules.mavproxy_misseditor import me_event
 MissionEditorEvent = me_event.MissionEditorEvent
 
 from pymavlink import mavutil
+from pymavlink import mavwp
 
 import time
 import threading
@@ -43,6 +44,25 @@ class MissionEditorEventThread(threading.Thread):
 
                 if isinstance(event, win_layout.WinLayout):
                     win_layout.set_layout(event, self.mp_misseditor.set_layout)
+                elif isinstance(event, mavwp.MAVWPLoader):
+                    self.mp_misseditor.gui_event_queue_lock.acquire()
+                    self.mp_misseditor.gui_event_queue.put(MissionEditorEvent(
+                        me_event.MEGE_CLEAR_MISS_TABLE))
+                    self.mp_misseditor.gui_event_queue_lock.release()
+                    if event.count() > 0:
+                        self.mp_misseditor.gui_event_queue_lock.acquire()
+                        self.mp_misseditor.gui_event_queue.put(MissionEditorEvent(
+                            me_event.MEGE_ADD_MISS_TABLE_ROWS,num_rows=event.count()-1))
+                        self.mp_misseditor.gui_event_queue_lock.release()
+
+                    for m in event.wpoints:
+                        self.mp_misseditor.gui_event_queue_lock.acquire()
+                        self.mp_misseditor.gui_event_queue.put(MissionEditorEvent(
+                            me_event.MEGE_SET_MISS_ITEM,
+                            num=m.seq,command=m.command,param1=m.param1,
+                            param2=m.param2,param3=m.param3,param4=m.param4,
+                            lat=m.x,lon=m.y,alt=m.z,frame=m.frame))
+                        self.mp_misseditor.gui_event_queue_lock.release()
                 else:
                     event_type = event.get_type()
 
@@ -161,7 +181,7 @@ class MissionEditorEventThread(threading.Thread):
             time.sleep(0.2)
 
 class MissionEditorMain(object):
-    def __init__(self, mpstate):
+    def __init__(self, mpstate, elemodel):
         self.num_wps_expected = 0 #helps me to know if all my waypoints I'm expecting have arrived
         self.wps_received = {}
 
@@ -175,7 +195,7 @@ class MissionEditorMain(object):
         self.close_window = multiproc.Semaphore()
         self.close_window.acquire()
 
-        self.child = multiproc.Process(target=self.child_task,args=(self.event_queue,self.event_queue_lock,self.gui_event_queue,self.gui_event_queue_lock,self.close_window))
+        self.child = multiproc.Process(target=self.child_task,args=(self.event_queue,self.event_queue_lock,self.gui_event_queue,self.gui_event_queue_lock,self.close_window, elemodel))
         self.child.start()
 
         self.event_thread = MissionEditorEventThread(self, self.event_queue, self.event_queue_lock)
@@ -192,6 +212,7 @@ class MissionEditorMain(object):
         self.mavlink_message_queue_handler = threading.Thread(target=self.mavlink_message_queue_handler)
         self.mavlink_message_queue_handler.start()
         self.needs_unloading = False
+        self.last_wp_change = time.time()
 
     def mavlink_message_queue_handler(self):
         while not self.time_to_quit:
@@ -221,12 +242,25 @@ class MissionEditorMain(object):
         self.mpstate.miss_editor.close()
         self.mpstate.miss_editor = None
 
+    def get_wps_from_module(self):
+        '''get WP list from wp module'''
+        self.event_queue_lock.acquire()
+        self.event_queue.put(self.mpstate.module('wp').wploader)
+        self.event_queue_lock.release()
+
     def idle_task(self):
         now = time.time()
         if self.last_unload_check_time + self.unload_check_interval < now:
             self.last_unload_check_time = now
             if not self.child.is_alive():
                 self.close()
+                return
+        last_wp_change = self.mpstate.module('wp').loading_waypoint_lasttime
+        if last_wp_change > self.last_wp_change:
+            self.last_wp_change = last_wp_change
+            self.get_wps_from_module()
+
+
 
 
     def mavlink_packet(self, m):
@@ -260,7 +294,7 @@ class MissionEditorMain(object):
                 self.num_wps_expected = m.count
                 self.wps_received = {}
 
-                if (m.count > 0):
+                if m.count > 1:
                     self.gui_event_queue.put(MissionEditorEvent(
                         me_event.MEGE_ADD_MISS_TABLE_ROWS,num_rows=m.count-1))
             #write has been sent by the mission editor:
@@ -283,7 +317,7 @@ class MissionEditorMain(object):
 
                     self.wps_received[m.seq] = True
 
-    def child_task(self, q, l, gq, gl, cw_sem):
+    def child_task(self, q, l, gq, gl, cw_sem, elemodel):
         '''child process - this holds GUI elements'''
         mp_util.child_close_fds()
 
@@ -292,7 +326,7 @@ class MissionEditorMain(object):
         from MAVProxy.modules.mavproxy_misseditor import missionEditorFrame
 
         self.app = wx.App(False)
-        self.app.frame = missionEditorFrame.MissionEditorFrame(self,parent=None,id=wx.ID_ANY)
+        self.app.frame = missionEditorFrame.MissionEditorFrame(self,parent=None,id=wx.ID_ANY, elemodel=elemodel)
 
         self.app.frame.set_event_queue(q)
         self.app.frame.set_event_queue_lock(l)

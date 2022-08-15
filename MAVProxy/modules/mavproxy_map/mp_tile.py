@@ -28,7 +28,9 @@ if sys.version_info.major < 3:
 else:
     from urllib.request import Request as url_request
     from urllib.request import urlopen as url_open
-    from urllib.error import URLError as url_error
+    from urllib.error import URLError as actual_url_error
+    from http.client import RemoteDisconnected
+    url_error = (RemoteDisconnected, actual_url_error)
 
 from MAVProxy.modules.lib import mp_util
 
@@ -370,7 +372,10 @@ class MPTile:
             roi = img[tile_info.offsety:tile_info.offsety+height2, tile_info.offsetx:tile_info.offsetx+width2]
 
             # and scale it
-            scaled = cv2.resize(roi, (TILES_HEIGHT,TILES_WIDTH))
+            try:
+                scaled = cv2.resize(roi, (TILES_HEIGHT,TILES_WIDTH))
+            except Exception as ex:
+                return None
             #cv.Rectangle(scaled, (0,0), (255,255), (0,255,0), 1)
             return scaled
         return None

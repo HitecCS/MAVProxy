@@ -17,6 +17,7 @@ import math
 import platform
 import json
 import struct
+import glob
 
 try:
     reload
@@ -231,12 +232,14 @@ class MPState(object):
         self.vehicle_name = None
         from MAVProxy.modules.lib.mp_settings import MPSettings, MPSetting
         self.settings = MPSettings(
-            [ MPSetting('link', int, 1, 'Primary Link', tab='Link', range=(0,4), increment=1),
+            [ MPSetting('link', int, 1, 'Primary Link', tab='Link', range=(0,100), increment=1),
               MPSetting('streamrate', int, 4, 'Stream rate link1', range=(-1,500), increment=1),
               MPSetting('streamrate2', int, 4, 'Stream rate link2', range=(-1,500), increment=1),
               MPSetting('heartbeat', float, 1, 'Heartbeat rate (Hz)', range=(0,100), increment=0.1),
               MPSetting('mavfwd', bool, True, 'Allow forwarded control'),
+              MPSetting('mavfwd_disarmed', bool, True, 'Allow forwarded control when disarmed'),
               MPSetting('mavfwd_rate', bool, False, 'Allow forwarded rate control'),
+              MPSetting('mavfwd_link', int, -1, 'Forward to a specific link'),
               MPSetting('shownoise', bool, True, 'Show non-MAVLink data'),
               MPSetting('baudrate', int, opts.baudrate, 'baudrate for new links', range=(0,10000000), increment=1),
               MPSetting('rtscts', bool, opts.rtscts, 'enable flow control'),
@@ -277,12 +280,15 @@ class MPState(object):
               MPSetting('fwdpos', bool, False, 'Forward GLOBAL_POSITION_INT on all links'),
               MPSetting('checkdelay', bool, True, 'check for link delay'),
               MPSetting('param_ftp', bool, True, 'try ftp for parameter download'),
+              MPSetting('param_docs', bool, True, 'show help for parameters'),
 
               MPSetting('vehicle_name', str, '', 'Vehicle Name', tab='Vehicle'),
 
               MPSetting('sys_status_error_warn_interval', int, 30, 'interval to warn of autopilot software failure'),
 
               MPSetting('inhibit_screensaver_when_armed', bool, False, 'inhibit screensaver while vehicle armed'),
+
+              MPSetting('timeout', int, 5, 'Number of seconds with no packets for a link to considered down', range=(0,255), increment=1),
 
             ])
 
@@ -305,6 +311,11 @@ class MPState(object):
         self.sysid_outputs = {}
         self.mav_filtered_outputs = []
 
+        # Mapping of all detected sysid's to links
+        # Key is link id, value is all detected sysid's/compid's in that link
+        # Dict of self.vehicle_link_map[linknumber] = set([(sysid1,compid1), (sysid2,compid2), ...])
+        self.vehicle_link_map = {}
+
         # SITL output
         self.sitl_output = None
 
@@ -325,6 +336,7 @@ class MPState(object):
         self.is_sitl = False
         self.start_time_s = time.time()
         self.attitude_time_s = 0
+        self.position = None
 
     @property
     def mav_param(self):
@@ -373,6 +385,15 @@ class MPState(object):
             if not m.linkerror:
                 return m
         return self.mav_master[self.settings.link-1]
+
+    def foreach_mav(self, sysid, compid, closure):
+        # Send mavlink message only on all links that contain vehicle (sysid, compid)
+        # More efficient than just blasting all links, when sending targetted messages
+        # Also useful for sending messages to non-selected vehicles
+        for linkNumber, vehicleList in self.vehicle_link_map.items():
+            if (sysid, compid) not in vehicleList:
+                continue
+            closure(self.mav_master[linkNumber].mav)
 
     def notify_click(self):
         notify_mods = ['map', 'misseditor']
@@ -478,8 +499,8 @@ def generate_kwargs(args):
 def get_exception_stacktrace(e):
     if sys.version_info[0] >= 3:
         ret = "%s\n" % e
-        ret += ''.join(traceback.format_exception(etype=type(e),
-                                                  value=e,
+        ret += ''.join(traceback.format_exception(type(e),
+                                                  e,
                                                   tb=e.__traceback__))
         return ret
     return traceback.format_exc(e)
@@ -872,12 +893,19 @@ def process_mavlink(slave):
         return
     if msgs is None:
         return
-    if mpstate.settings.mavfwd and not mpstate.status.setup_mode:
+    allow_fwd = mpstate.settings.mavfwd
+    if not allow_fwd and mpstate.settings.mavfwd_disarmed and not mpstate.master(-1).motors_armed():
+        allow_fwd = True
+    if mpstate.status.setup_mode:
+        allow_fwd = False
+    if allow_fwd:
         for m in msgs:
             target_sysid = getattr(m, 'target_system', -1)
             mbuf = m.get_msgbuf()
+
             mpstate.master(target_sysid).write(mbuf)
             mpstate.console.writeln('> ' + str(m))
+
             if mpstate.logqueue:
                usec = int(time.time() * 1.0e6)
                mpstate.logqueue.put(bytearray(struct.pack('>Q', usec) + m.get_msgbuf()))
@@ -1004,18 +1032,20 @@ def set_stream_rates():
         else:
             rate = mpstate.settings.streamrate2
         if rate != -1 and mpstate.settings.streamrate != -1:
-            master.mav.request_data_stream_send(mpstate.settings.target_system, mpstate.settings.target_component,
-                                                mavutil.mavlink.MAV_DATA_STREAM_ALL,
-                                                rate, 1)
+            # Send to all detected vehicles in this link
+            for (sysid, compid) in mpstate.vehicle_link_map[master.linknum]:
+                master.mav.request_data_stream_send(sysid, compid,
+                                                    mavutil.mavlink.MAV_DATA_STREAM_ALL,
+                                                    rate, 1)
 
 def check_link_status():
     '''check status of master links'''
     tnow = time.time()
-    if mpstate.status.last_message != 0 and tnow > mpstate.status.last_message + 5:
+    if mpstate.status.last_message != 0 and tnow > mpstate.status.last_message + mpstate.settings.timeout:
         say("no link")
         mpstate.status.heartbeat_error = True
     for master in mpstate.mav_master:
-        if not master.linkerror and (tnow > master.last_message + 5 or master.portdead):
+        if not master.linkerror and (tnow > master.last_message + mpstate.settings.timeout or master.portdead):
             say("link %s down" % (mp_module.MPModule.link_label(master)))
             master.linkerror = True
 
@@ -1412,7 +1442,11 @@ if __name__ == '__main__':
 
     # open master link
     for mdev in opts.master:
-        if not mpstate.module('link').link_add(mdev, force_connected=opts.force_connected):
+        if mdev.find('?') != -1 or mdev.find('*') != -1:
+            for m in glob.glob(mdev):
+                if not mpstate.module('link').link_add(m, force_connected=opts.force_connected):
+                    sys.exit(1)
+        elif not mpstate.module('link').link_add(mdev, force_connected=opts.force_connected):
             sys.exit(1)
 
     if not opts.master and len(serial_list) == 1:
@@ -1463,7 +1497,8 @@ if __name__ == '__main__':
         # some core functionality is in modules
         standard_modules = opts.default_modules.split(',')
         for m in standard_modules:
-            load_module(m, quiet=True)
+            if m:
+                load_module(m, quiet=True)
 
     if platform.system() != 'Windows':
         if opts.console:

@@ -10,6 +10,7 @@ import datetime
 import base64
 import time
 import errno
+import select
 from MAVProxy.modules.lib import rtcm3
 import ssl
 from optparse import OptionParser
@@ -54,6 +55,7 @@ class NtripClient(object):
         self.user = base64.b64encode(user)
         self.port = port
         self.caster = caster
+        self.caster_ip = None
         self.mountpoint = mountpoint
         if not self.mountpoint.startswith("/"):
             self.mountpoint = "/" + self.mountpoint
@@ -63,11 +65,14 @@ class NtripClient(object):
         self.host = host
         self.V2 = V2
         self.socket = None
+        self.socket_pending = None
         self.found_header = False
         self.sent_header = False
         # RTCM3 parser
         self.rtcm3 = rtcm3.RTCM3()
         self.last_id = None
+        self.dt_last_gga_sent = 0
+        self.last_connect_attempt = time.time()
         if self.port == 443:
             # force SSL on port 443
             self.ssl = True
@@ -155,7 +160,8 @@ class NtripClient(object):
                 self.socket = None
                 casterResponse = ''
             if sys.version_info.major >= 3:
-                casterResponse = str(casterResponse, 'ascii')
+                # Ignore non ascii characters in HTTP response
+                casterResponse = str(casterResponse, 'ascii', 'ignore')
             header_lines = casterResponse.split("\r\n")
             for line in header_lines:
                 if line == "":
@@ -170,14 +176,7 @@ class NtripClient(object):
                    #raise NtripError("Mount Point does not exist")
                 elif line.find(" 200 OK") != -1:
                     # Request was valid
-                    try:
-                        gga = self.getGGAString()
-                        if sys.version_info.major >= 3:
-                            gga = bytearray(gga, 'ascii')
-                        self.socket.sendall(gga)
-                    except Exception:
-                        self.socket = None
-                        return None
+                    self.send_gga()
             return None
         # normal data read
         while True:
@@ -212,13 +211,16 @@ class NtripClient(object):
         '''connect to NTRIP server'''
         self.sent_header = False
         self.found_header = False
+ 
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+   
         if self.ssl:
             sock = ssl.wrap_socket(sock)
         try:
             error_indicator = sock.connect_ex((self.caster, self.port))
         except Exception:
             print("socket exception on connect")
+
             return False
         if error_indicator == 0:
             sock.setblocking(0)
@@ -233,6 +235,16 @@ class NtripClient(object):
             if data is None:
                 continue
             print("got: ", len(data))
+
+    def send_gga(self):
+        gga = self.getGGAString()
+        if sys.version_info.major >= 3:
+            gga = bytearray(gga, "ascii")
+        try:
+            self.socket.sendall(gga)
+            self.dt_last_gga_sent = time.time()
+        except Exception:
+            self.socket = None
 
 if __name__ == '__main__':
     usage = "NtripClient.py [options] [caster] [port] mountpoint"

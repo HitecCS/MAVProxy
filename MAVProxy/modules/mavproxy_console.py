@@ -8,7 +8,6 @@ import os, sys, math, time, re
 
 from MAVProxy.modules.lib import wxconsole
 from MAVProxy.modules.lib import textconsole
-from MAVProxy.modules.mavproxy_map import mp_elevation
 from pymavlink import mavutil
 from MAVProxy.modules.lib import mp_util
 from MAVProxy.modules.lib import mp_module
@@ -36,6 +35,8 @@ class ConsoleModule(mp_module.MPModule):
         self.last_sys_status_errors_announce = 0
         self.user_added = {}
         self.safety_on = False
+        self.unload_check_interval = 5 # seconds
+        self.last_unload_check_time = time.time()
         self.add_command('console', self.cmd_console, "console module", ['add','list','remove'])
         mpstate.console = wxconsole.MessageConsole(title='Console')
 
@@ -73,8 +74,6 @@ class ConsoleModule(mp_module.MPModule):
         mpstate.console.set_status('Params', 'Param ---/---', row=3)
         mpstate.console.set_status('Mission', 'Mission --/--', row=3)
 
-        mpstate.console.ElevationMap = mp_elevation.ElevationModel()
-
         self.vehicle_list = []
         self.vehicle_menu = None
         self.vehicle_name_by_sysid = {}
@@ -86,7 +85,8 @@ class ConsoleModule(mp_module.MPModule):
             self.menu = MPMenuTop([])
             self.add_menu(MPMenuSubMenu('MAVProxy',
                                         items=[MPMenuItem('Settings', 'Settings', 'menuSettings'),
-                                               MPMenuItem('Map', 'Load Map', '# module load map')]))
+                                               MPMenuItem('Show Map', 'Load Map', '# module load map'),
+                                               MPMenuItem('Show HUD', 'Load HUD', '# module load horizon')]))
             self.vehicle_menu = MPMenuSubMenu('Vehicle', items=[])
             self.add_menu(self.vehicle_menu)
 
@@ -197,6 +197,12 @@ class ConsoleModule(mp_module.MPModule):
             return "Heli"
         if hb.type == mavutil.mavlink.MAV_TYPE_ANTENNA_TRACKER:
             return "Tracker"
+        if hb.type == mavutil.mavlink.MAV_TYPE_AIRSHIP:
+            return "Blimp"
+        elif hb.type == mavutil.mavlink.MAV_TYPE_ADSB:
+            return "ADSB"
+        elif hb.type == mavutil.mavlink.MAV_TYPE_ODID:
+            return "ODID"
         return "UNKNOWN(%u)" % hb.type
 
     def component_type_string(self, hb):
@@ -207,6 +213,10 @@ class ConsoleModule(mp_module.MPModule):
             return "Gimbal"
         elif hb.type == mavutil.mavlink.MAV_TYPE_ONBOARD_CONTROLLER:
             return "CC"
+        elif hb.type == mavutil.mavlink.MAV_TYPE_ADSB:
+            return "ADSB"
+        elif hb.type == mavutil.mavlink.MAV_TYPE_ODID:
+            return "ODID"
         elif hb.type == mavutil.mavlink.MAV_TYPE_GENERIC:
             return "Generic"
         return self.vehicle_type_string(hb)
@@ -259,7 +269,7 @@ class ConsoleModule(mp_module.MPModule):
         sysid = msg.get_srcSystem()
         compid = msg.get_srcComponent()
 
-        if type == 'HEARTBEAT':
+        if type == 'HEARTBEAT' or type == 'HIGH_LATENCY2':
             if not sysid in self.vehicle_list:
                 self.add_new_vehicle(msg)
             if sysid not in self.component_name:
@@ -330,17 +340,17 @@ class ConsoleModule(mp_module.MPModule):
             rel_alt = master.field('GLOBAL_POSITION_INT', 'relative_alt', 0) * 1.0e-3
             agl_alt = None
             if self.settings.basealt != 0:
-                agl_alt = self.console.ElevationMap.GetElevation(lat, lng)
+                agl_alt = self.module('terrain').ElevationModel.GetElevation(lat, lng)
                 if agl_alt is not None:
                     agl_alt = self.settings.basealt - agl_alt
             else:
                 try:
-                    agl_alt_home = self.console.ElevationMap.GetElevation(home_lat, home_lng)
+                    agl_alt_home = self.module('terrain').ElevationModel.GetElevation(home_lat, home_lng)
                 except Exception as ex:
                     print(ex)
                     agl_alt_home = None
                 if agl_alt_home is not None:
-                    agl_alt = self.console.ElevationMap.GetElevation(lat, lng)
+                    agl_alt = self.module('terrain').ElevationModel.GetElevation(lat, lng)
                 if agl_alt is not None:
                     agl_alt = agl_alt_home - agl_alt
             if agl_alt is not None:
@@ -479,7 +489,14 @@ class ConsoleModule(mp_module.MPModule):
                 status += 'O2'
             self.console.set_status('PWR', status, fg=fg)
             self.console.set_status('Srv', 'Srv %.2f' % (msg.Vservo*0.001), fg='green')
-        elif type == 'HEARTBEAT':
+        elif type in ['HEARTBEAT', 'HIGH_LATENCY2']:
+            if msg.get_srcComponent() in [mavutil.mavlink.MAV_COMP_ID_ADSB,
+                                          mavutil.mavlink.MAV_COMP_ID_ODID_TXRX_1,
+                                          mavutil.mavlink.MAV_COMP_ID_ODID_TXRX_2,
+                                          mavutil.mavlink.MAV_COMP_ID_ODID_TXRX_3]:
+                # ignore these
+                return
+
             fmode = master.flightmode
             if self.settings.vehicle_name:
                 fmode = self.settings.vehicle_name + ':' + fmode
@@ -587,7 +604,60 @@ class ConsoleModule(mp_module.MPModule):
         elif type == 'PARAM_VALUE':
             rec, tot = self.module('param').param_status()
             self.console.set_status('Params', 'Param %u/%u' % (rec,tot))
-
+            
+        if type == 'HIGH_LATENCY2':
+            self.console.set_status('WPDist', 'Distance %s' % self.dist_string(msg.target_distance * 10))
+            # The -180 here for for consistency with NAV_CONTROLLER_OUTPUT (-180->180), whereas HIGH_LATENCY2 is (0->360)
+            self.console.set_status('WPBearing', 'Bearing %u' % ((msg.target_heading * 2) - 180))
+            alt_error = "%s%s" % (self.height_string(msg.target_altitude - msg.altitude),
+                                  "(L)" if (msg.target_altitude - msg.altitude) > 0 else "(L)")
+            self.console.set_status('AltError', 'AltError %s' % alt_error)
+            self.console.set_status('AspdError', 'AspdError %s%s' % (self.speed_string((msg.airspeed_sp - msg.airspeed)/5),
+                                                                    "(L)" if (msg.airspeed_sp - msg.airspeed) > 0 else "(L)"))
+            # The -180 here for for consistency with WIND (-180->180), whereas HIGH_LATENCY2 is (0->360)
+            self.console.set_status('Wind', 'Wind %u/%s' % ((msg.wind_heading * 2) - 180, self.speed_string(msg.windspeed / 5)))
+            self.console.set_status('Alt', 'Alt %s' % self.height_string(msg.altitude - self.module('terrain').ElevationModel.GetElevation(msg.latitude / 1E7, msg.longitude / 1E7)))
+            self.console.set_status('AirSpeed', 'AirSpeed %s' % self.speed_string(msg.airspeed / 5))
+            self.console.set_status('GPSSpeed', 'GPSSpeed %s' % self.speed_string(msg.groundspeed / 5))
+            self.console.set_status('Thr', 'Thr %u' % msg.throttle)
+            self.console.set_status('Heading', 'Hdg %s/---' % (msg.heading * 2))
+            self.console.set_status('WP', 'WP %u/--' % (msg.wp_num))
+            
+            #re-map sensors
+            sensors = { 'AS'   : mavutil.mavlink.HL_FAILURE_FLAG_DIFFERENTIAL_PRESSURE,
+                        'MAG'  : mavutil.mavlink.HL_FAILURE_FLAG_3D_MAG,
+                        'INS'  : mavutil.mavlink.HL_FAILURE_FLAG_3D_ACCEL | mavutil.mavlink.HL_FAILURE_FLAG_3D_GYRO,
+                        'AHRS' : mavutil.mavlink.HL_FAILURE_FLAG_ESTIMATOR,
+                        'RC'   : mavutil.mavlink.HL_FAILURE_FLAG_RC_RECEIVER,
+                        'TERR' : mavutil.mavlink.HL_FAILURE_FLAG_TERRAIN
+            }
+            for s in sensors.keys():
+                bits = sensors[s]
+                failed = ((msg.failure_flags & bits) == bits)
+                if failed:
+                    fg = 'red'
+                else:
+                    fg = 'green'
+                self.console.set_status(s, s, fg=fg)
+                
+            # do the remaining non-standard system mappings
+            fence_failed = ((msg.failure_flags & mavutil.mavlink.HL_FAILURE_FLAG_GEOFENCE) == mavutil.mavlink.HL_FAILURE_FLAG_GEOFENCE)
+            if fence_failed:
+                fg = 'red'
+            else:
+                fg = 'green'
+            self.console.set_status('Fence', 'FEN', fg=fg)
+            gps_failed = ((msg.failure_flags & mavutil.mavlink.HL_FAILURE_FLAG_GPS) == mavutil.mavlink.HL_FAILURE_FLAG_GPS)
+            if gps_failed:
+                self.console.set_status('GPS', 'GPS FAILED', fg='red')
+            else:
+                self.console.set_status('GPS', 'GPS OK', fg='green')
+            batt_failed = ((msg.failure_flags & mavutil.mavlink.HL_FAILURE_FLAG_GPS) == mavutil.mavlink.HL_FAILURE_FLAG_BATTERY)
+            if batt_failed:
+                self.console.set_status('PWR', 'PWR FAILED', fg='red')
+            else:
+                self.console.set_status('PWR', 'PWR OK', fg='green')            
+                                                                        
         for id in self.user_added.keys():
             if type in self.user_added[id].msg_types:
                 d = self.user_added[id]
@@ -597,6 +667,13 @@ class ConsoleModule(mp_module.MPModule):
                 except Exception as ex:
                     print(ex)
                     pass
+
+    def idle_task(self):
+        now = time.time()
+        if self.last_unload_check_time + self.unload_check_interval < now:
+            self.last_unload_check_time = now
+            if not self.console.is_alive():
+                self.needs_unloading = True
 
 def init(mpstate):
     '''initialise module'''

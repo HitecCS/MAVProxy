@@ -1,9 +1,12 @@
+import errno
 import time
 import os
+import socket
 from MAVProxy.modules.lib import mp_menu
 from MAVProxy.modules.lib.wxconsole_util import Value, Text
 from MAVProxy.modules.lib.wx_loader import wx
 from MAVProxy.modules.lib import win_layout
+from MAVProxy.modules.lib import icon
 
 class ConsoleFrame(wx.Frame):
     """ The main frame of the console"""
@@ -11,6 +14,14 @@ class ConsoleFrame(wx.Frame):
     def __init__(self, state, title):
         self.state = state
         wx.Frame.__init__(self, None, title=title, size=(800,300))
+        # different icons for MAVExplorer and MAVProxy
+        try:
+            if title == "MAVExplorer":
+                self.SetIcon(icon.SimpleIcon("EXPLORER").get_ico())
+            else:
+                self.SetIcon(icon.SimpleIcon("CONSOLE").get_ico())
+        except Exception:
+            pass
         self.panel = wx.Panel(self)
         self.panel.SetBackgroundColour('white')
         state.frame = self
@@ -84,14 +95,23 @@ class ConsoleFrame(wx.Frame):
             self.timer.Stop()
             self.Destroy()
             return
-        while state.child_pipe_recv.poll():
+
+        while True:
+            try:
+                poll_success = state.child_pipe_recv.poll()
+                if not poll_success:
+                    return
+            except socket.error as e:
+                if e.errno == errno.EPIPE:
+                    break
+                else:
+                    raise e
+
             try:
                 obj = state.child_pipe_recv.recv()
             except EOFError:
-                self.timer.Stop()
-                self.Destroy()
-                return
-            
+                break
+                
             if isinstance(obj, Value):
                 # request to set a status field
                 if not obj.name in self.values:
@@ -133,3 +153,7 @@ class ConsoleFrame(wx.Frame):
                 self.Update()
             elif isinstance(obj, win_layout.WinLayout):
                 win_layout.set_wx_window_layout(self, obj)
+
+        self.timer.Stop()
+        self.Destroy()
+        return

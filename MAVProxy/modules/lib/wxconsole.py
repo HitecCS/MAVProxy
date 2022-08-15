@@ -18,7 +18,7 @@ class MessageConsole(textconsole.SimpleConsole):
     def __init__(self,
                  title='MAVProxy: console'):
         textconsole.SimpleConsole.__init__(self)
-        self.title  = title
+        self.title = title
         self.menu_callback = None
         self.parent_pipe_recv,self.child_pipe_send = multiproc.Pipe(duplex=False)
         self.child_pipe_recv,self.parent_pipe_send = multiproc.Pipe(duplex=False)
