@@ -9,7 +9,6 @@ import io
 import sys
 import platform
 import warnings
-
 import time
 from math import cos, sin, tan, atan2, sqrt, radians, degrees, pi, log, fmod
 
@@ -62,6 +61,9 @@ def gps_distance(lat1, lon1, lat2, lon2):
     a = math.sin(0.5*dLat)**2 + math.sin(0.5*dLon)**2 * math.cos(lat1) * math.cos(lat2)
     c = 2.0 * math.atan2(math.sqrt(a), math.sqrt(1.0-a))
     return radius_of_earth * c
+
+
+
 
 
 def gps_bearing(lat1, lon1, lat2, lon2):

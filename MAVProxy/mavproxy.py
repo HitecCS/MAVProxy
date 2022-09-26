@@ -309,7 +309,12 @@ class MPState(object):
         # mavlink outputs
         self.mav_outputs = []
         self.sysid_outputs = {}
-        self.mav_filtered_outputs = []
+
+        # mavlink aux outputs, found in output module
+        self.mav_aux_outputs = []
+        self.filter_msgs = set()
+        self.filter_type = None
+
 
         # Mapping of all detected sysid's to links
         # Key is link id, value is all detected sysid's/compid's in that link
@@ -320,7 +325,6 @@ class MPState(object):
         self.sitl_output = None
 
         self.additional_msgs = []
-        self.mav_whitelisted_msgs = {}
         self.mav_param_by_sysid = {}
         self.mav_param_by_sysid[(self.settings.target_system,self.settings.target_component)] = mavparm.MAVParmDict()
         self.modules = []
@@ -337,6 +341,10 @@ class MPState(object):
         self.start_time_s = time.time()
         self.attitude_time_s = 0
         self.position = None
+
+        #flag for if remote ID is currently being overriden by an application
+        self.override_timeout = 0
+        self.DRONE_ID_MSGS = set()
 
     @property
     def mav_param(self):
@@ -813,7 +821,7 @@ def process_master(m):
     msgs = m.mav.parse_buffer(s)
     if msgs:
         for msg in msgs:
-            mpstate.console.writeln('> ' + str(msg))
+            #mpstate.console.writeln('> ' + str(msg))
             sysid = msg.get_srcSystem()
             if sysid in mpstate.sysid_outputs:
                   # the message has been handled by a specialised handler for this system
@@ -826,7 +834,7 @@ def process_master(m):
                 mpstate.status.mav_error += 1
 
 
-def process_filtered_mavlink(slave):
+def process_aux_mavlink(slave):
     try:
         buf = slave.recv()
     except socket.error:
@@ -841,12 +849,24 @@ def process_filtered_mavlink(slave):
         return
     if msgs is None:
         return
+
     if mpstate.settings.mavfwd and not mpstate.status.setup_mode:
         for m in msgs:
-            if m.get_msgId() in mpstate.whitelisted_msgs.keys():
+            filter_msg = False
+            if mpstate.filter_type == "Blacklist" and m.get_msgId() in mpstate.filter_msgs:
+                filter_msg = True
+            if mpstate.filter_type == "Whitelist" and m.get_msgId() not in mpstate.filter_msgs:
+                filter_msg = True
+            if not filter_msg:
                 target_sysid = getattr(m, 'target_system', -1)
                 mbuf = m.get_msgbuf()
-                mpstate.master(target_sysid).write(mbuf)
+                # mpstate.master(target_sysid).write(mbuf)
+                if mpstate.settings.mavfwd_link > 0 and mpstate.settings.mavfwd_link <= len(mpstate.mav_master):
+                    mpstate.mav_master[mpstate.settings.mavfwd_link-1].write(mbuf)
+                else:
+                    # find best link by sysid
+                    mpstate.master(target_sysid).write(mbuf)
+
                 if mpstate.logqueue:
                     usec = int(time.time() * 1.0e6)
                     mpstate.logqueue.put(bytearray(struct.pack('>Q', usec)) + m.get_msgbuf())
@@ -859,8 +879,6 @@ def process_filtered_mavlink(slave):
 
 
 
-#TODO: Looks like it's coming in from a diff vehicle, 255 on comp 230
-#Should this look like its coming from the autopilot? or is that ok?
 def process_additional_local_messages(m):
     for msg in mpstate.additional_msgs:
         if getattr(m, '_timestamp', None) is None:
@@ -868,7 +886,7 @@ def process_additional_local_messages(m):
             packed_msg = msg.pack(m.mav)
             for r in mpstate.mav_outputs:
                 r.write(packed_msg)
-            for s in mpstate.mav_filtered_outputs:
+            for s in mpstate.mav_aux_outputs:
                 s.write(packed_msg)
         if msg.get_type() == "BAD_DATA":
             if opts.show_errors:
@@ -900,11 +918,20 @@ def process_mavlink(slave):
         allow_fwd = False
     if allow_fwd:
         for m in msgs:
+
+            #OpenDroneID module uses this override_timeout to check if it should stop/resume sending messages
+            if mpstate.DRONE_ID_MSGS is not None and m.get_msgId() in mpstate.DRONE_ID_MSGS:
+                 mpstate.override_timeout = time.time()+10
+
             target_sysid = getattr(m, 'target_system', -1)
             mbuf = m.get_msgbuf()
 
-            mpstate.master(target_sysid).write(mbuf)
-            mpstate.console.writeln('> ' + str(m))
+            #mpstate.master(target_sysid).write(mbuf)
+            if mpstate.settings.mavfwd_link > 0 and mpstate.settings.mavfwd_link <= len(mpstate.mav_master):
+                mpstate.mav_master[mpstate.settings.mavfwd_link-1].write(mbuf)
+            else:
+                # find best link by sysid
+                mpstate.master(target_sysid).write(mbuf)
 
             if mpstate.logqueue:
                usec = int(time.time() * 1.0e6)
@@ -1150,7 +1177,7 @@ def main_loop():
         for m in mpstate.mav_outputs:
             rin.append(m.fd)
 
-        for fo in mpstate.mav_filtered_outputs:
+        for fo in mpstate.mav_aux_outputs:
             rin.append(fo.fd)
 
         for sysid in mpstate.sysid_outputs:
@@ -1190,9 +1217,9 @@ def main_loop():
                           return
                     continue
 
-            for fo in mpstate.mav_filtered_outputs:
+            for fo in mpstate.mav_aux_outputs:
                 if fd == fo.fd:
-                    process_filtered_mavlink(fo)
+                    process_aux_mavlink(fo)
                     if mpstate is None:
                           return
                     continue
@@ -1346,7 +1373,7 @@ if __name__ == '__main__':
     parser.add_option("--profile", action='store_true', help="run the Yappi python profiler")
     parser.add_option("--state-basedir", default=None, help="base directory for logs and aircraft directories")
     parser.add_option("--version", action='store_true', help="version information")
-    parser.add_option("--default-modules", default="log,signing,wp,rally,fence,ftp,param,relay,tuneopt,arm,mode,calibration,rc,auxopt,misc,cmdlong,battery,terrain,output,adsb,layout", help='default module list')
+    parser.add_option("--default-modules", default="log,signing,wp,rally,fence,ftp,param,relay,tuneopt,arm,mode,calibration,rc,auxopt,misc,cmdlong,battery,terrain,adsb,layout", help='default module list')
 
     (opts, args) = parser.parse_args()
     if len(args) != 0:
@@ -1393,9 +1420,11 @@ if __name__ == '__main__':
         # modules/mavutil
         load_module('speech')
 
-    serial_list = mavutil.auto_detect_serial(preferred_list=preferred_ports)
-    serial_list.sort(key=lambda x: x.device)
+    #disable auto serial detection
+    #serial_list = mavutil.auto_detect_serial(preferred_list=preferred_ports)
+    #serial_list.sort(key=lambda x: x.device)
 
+    serial_list = []
     # remove OTG2 ports for dual CDC
     if len(serial_list) == 2 and serial_list[0].device.startswith("/dev/serial/by-id"):
         if serial_list[0].device[:-1] == serial_list[1].device[0:-1]:
@@ -1436,7 +1465,7 @@ if __name__ == '__main__':
         signal.signal(sig, quit_handler)
 
     load_module('link', quiet=True)
-
+    load_module('output', quiet=True)
     mpstate.settings.source_system = opts.SOURCE_SYSTEM
     mpstate.settings.source_component = opts.SOURCE_COMPONENT
 
@@ -1457,14 +1486,14 @@ if __name__ == '__main__':
           #if no display, assume running CLI mode and exit
           if platform.system() != 'Windows' and "DISPLAY" not in os.environ:
               sys.exit(1)
-    elif not opts.master:
-          wifi_device = '0.0.0.0:14550'
-          mpstate.module('link').link_add(wifi_device)
+    #elif not opts.master:
+    #      wifi_device = '0.0.0.0:14550'
+    #      mpstate.module('link').link_add(wifi_device)
 
-
+    #load_module('output')
     # open any mavlink output ports
-    for port in opts.output:
-        mpstate.mav_outputs.append(mavutil.mavlink_connection(port, baud=int(opts.baudrate), input=False))
+    #for port in opts.output:
+    #    mpstate.mav_outputs.append(mavutil.mavlink_connection(port, baud=int(opts.baudrate), input=False))
 
     if opts.sitl:
         mpstate.sitl_output = mavutil.mavudp(opts.sitl, input=False)

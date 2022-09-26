@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 '''enable run-time addition and removal of UDP clients , just like --out on the cnd line'''
 ''' TO USE:
     output add 10.11.12.13:14550
@@ -11,12 +11,39 @@ from pymavlink import mavutil
 
 from MAVProxy.modules.lib import mp_module
 from MAVProxy.modules.lib import mp_util
+from MAVProxy.modules.lib import mp_settings
+
+
+try:
+    from setting_utils import *
+except Exception as e:
+    raise(e)
 
 class OutputModule(mp_module.MPModule):
     def __init__(self, mpstate):
         super(OutputModule, self).__init__(mpstate, "output", "output control", public=True)
         self.add_command('output', self.cmd_output, "output control",
                          ["<list|add|remove|sysid>"])
+
+        from MAVProxy.modules.lib.mp_settings import MPSetting
+        self.Output_settings = mp_settings.MPSettings([MPSetting("primary_outs", list, []), MPSetting("mav_outs", list,[]),
+							MPSetting("auxillary_outs", list, []), MPSetting("filter_type", str, ""),
+							MPSetting("msg_list", list, [])])
+
+        self.Output_settings.load_json(get_modules_json_file("output.json"))
+
+        self.mpstate.filter_type = self.Output_settings.get_setting('filter_type').value
+        self.mpstate.filter_msgs = set(self.Output_settings.get_setting('msg_list').value)
+
+        for out in self.Output_settings.get_setting("primary_outs").value:
+            self.cmd_output(["add", out])
+
+        for out in self.Output_settings.get_setting("mav_outs").value:
+            self.cmd_output(["add", out])
+
+        for out in self.Output_settings.get_setting("auxillary_outs").value:
+            self.cmd_output(["add_aux", out])
+
 
     def cmd_output(self, args):
         '''handle output commands'''
@@ -32,6 +59,11 @@ class OutputModule(mp_module.MPModule):
                 print("Usage: output remove OUTPUT")
                 return
             self.cmd_output_remove(args[1:])
+        elif args[0] == "add_aux":
+            if len(args) != 2:
+                print("Usage: output add_aux OUTPUT")
+                return
+            self.cmd_output_add_aux(args[1:])
         elif args[0] == "sysid":
             if len(args) != 3:
                 print("Usage: output sysid SYSID OUTPUT")
@@ -39,6 +71,7 @@ class OutputModule(mp_module.MPModule):
             self.cmd_output_sysid(args[1:])
         else:
             print("usage: output <list|add|remove|sysid>")
+
 
     def cmd_output_list(self):
         '''list outputs'''
@@ -51,6 +84,23 @@ class OutputModule(mp_module.MPModule):
             for sysid in self.mpstate.sysid_outputs:
                 conn = self.mpstate.sysid_outputs[sysid]
                 print("%u: %s" % (sysid, conn.address))
+
+
+    def cmd_output_add_aux(self, args):
+        device = args[0]
+        print("Adding aux output %s" % device)
+        try:
+            conn = mavutil.mavlink_connection(device, input=False, source_system=self.settings.source_system)
+            conn.mav.srcComponent = self.settings.source_component
+        except Exception:
+            print("Failed to connect to %s" % device)
+            return
+        self.mpstate.mav_aux_outputs.append(conn)
+        try:
+            mp_util.child_fd_list_add(conn.port.fileno())
+        except Exception:
+            pass
+
 
     def cmd_output_add(self, args):
         '''add new output'''

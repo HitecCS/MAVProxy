@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 '''enable run-time addition and removal of master link, just like --master on the cnd line'''
 ''' TO USE:
     link add 10.11.12.13:14550
@@ -11,10 +11,17 @@ import time, struct, math, sys, fnmatch, traceback, json, os
 
 from MAVProxy.modules.lib import mp_module
 from MAVProxy.modules.lib import mp_util
+from MAVProxy.modules.lib import mp_settings
 
 if mp_util.has_wxpython:
     from MAVProxy.modules.lib.mp_menu import *
     from MAVProxy.modules.lib.wx_addlink import MPMenulinkAddDialog
+
+
+try:
+    from setting_utils import *
+except Exception as e:
+    raise(e)
 
 dataPackets = frozenset(['BAD_DATA','LOG_DATA'])
 delayedPackets = frozenset([ 'MISSION_CURRENT', 'SYS_STATUS', 'VFR_HUD',
@@ -38,6 +45,7 @@ preferred_ports = [
     '*Serial*',
 ]
 
+
 class LinkModule(mp_module.MPModule):
 
     def __init__(self, mpstate):
@@ -51,6 +59,9 @@ class LinkModule(mp_module.MPModule):
                           'hl (HLSTATE)'])
         self.add_command('vehicle', self.cmd_vehicle, "vehicle control")
         self.add_command('alllinks', self.cmd_alllinks, "send command on all links", ["(COMMAND)"])
+
+        from MAVProxy.modules.lib.mp_settings import MPSetting
+        self.Link_settings = mp_settings.MPSettings([MPSetting("links", list, []), MPSetting("mav_links", list, [])])
         self.no_fwd_types = set()
         self.no_fwd_types.add("BAD_DATA")
         self.add_completion_function('(SERIALPORT)', self.complete_serial_ports)
@@ -65,6 +76,15 @@ class LinkModule(mp_module.MPModule):
         self.datarate_logging_timer = mavutil.periodic_event(1)
         self.old_streamrate = 0
         self.old_streamrate2 = 0
+        self.Link_settings.load_json(get_modules_json_file("link.json"))
+
+
+
+        for link in self.Link_settings.get_setting("links").value:
+            self.link_add(link)
+
+        for link in self.Link_settings.get_setting("mav_links").value:
+            self.link_add(link)
 
         self.menu_added_console = False
         if mp_util.has_wxpython:
@@ -884,7 +904,7 @@ class LinkModule(mp_module.MPModule):
                 if mtype not in self.no_fwd_types:
                     for r in self.mpstate.mav_outputs:
                         r.write(m.get_msgbuf())
-                    for s in self.mpstate.mav_filtered_outputs:
+                    for s in self.mpstate.mav_aux_outputs:
                         s.write(m.get_msgbuf())
 
             sysid = m.get_srcSystem()

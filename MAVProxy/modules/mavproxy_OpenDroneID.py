@@ -7,6 +7,14 @@ from MAVProxy.modules.lib import mp_settings
 from pymavlink import mavutil
 import time
 
+
+
+try:
+    from setting_utils import *
+except ImportError as e:
+    raise(e)
+
+
 class OpenDroneIDModule(mp_module.MPModule):
 
     def __init__(self, mpstate):
@@ -50,6 +58,30 @@ class OpenDroneIDModule(mp_module.MPModule):
         self.operator_latitude = 0
         self.operator_longitude = 0
         self.operator_altitude_geo = 0
+        self.OpenDroneID_settings.load_json(get_modules_json_file('OpenDroneID.json'))
+        self.interval_time = 0
+        self.status_period = 3
+        self.gps_override = False
+        self.mpstate.DRONE_ID_MSGS = set([12900, 12902, 12903, 12904, 12905, 12918, 12915, 12919])
+
+
+    def update_gps_status(self):
+        status = ["No remoteID status", 'warning']
+        if self.gps_override:
+            status = ["Ground control overriding remoteID values", 'info']
+        else:
+            if self.mpstate.position is not None and self.mpstate.position.timestamp is not None:
+                try:
+                    res = str(self.mpstate.position)
+                    status = [res, 'info']
+                except Exception as e:
+                   status = ["No GPS position", 'warning']
+            else:
+               status = ["No GPS position", 'warning']
+        data = {"gps_status" : status}
+        set_status("gps_status", data)
+
+
 
     def cmd_opendroneid(self, args):
         '''opendroneid command parser'''
@@ -112,7 +144,6 @@ class OpenDroneIDModule(mp_module.MPModule):
                 self.operator_longitude = pos.longitude
             if pos.altitude is not None:
                 self.operator_altitude_geo = pos.altitude
-
         self.master.mav.open_drone_id_system_update_send(
             self.target_system,
             self.target_component,
@@ -120,7 +151,7 @@ class OpenDroneIDModule(mp_module.MPModule):
             int(self.operator_longitude*1.0e7),
             self.operator_altitude_geo,
             self.timestamp_2019())
-        
+
     def send_self_id(self):
         '''send SELF_ID'''
         self.master.mav.open_drone_id_self_id_send(
@@ -156,23 +187,34 @@ class OpenDroneIDModule(mp_module.MPModule):
         jan_1_2019_s = 1546261200
         return int(time.time() - jan_1_2019_s)
 
+
     def idle_task(self):
         '''called on idle'''
         now = time.time()
-        if now - self.last_loc_send_s > 1.0/self.OpenDroneID_settings.location_rate_hz:
-            self.last_loc_send_s = now
-            self.send_system_update()
-        if now - self.last_send_s > (1.0/self.OpenDroneID_settings.rate_hz)/4:
-            self.last_send_s = now
-            if self.next_msg == 0:
-                self.send_basic_id()
-            elif self.next_msg == 1:
-                self.send_system()
-            elif self.next_msg == 2:
-                self.send_self_id()
-            elif self.next_msg == 3:
-                self.send_operator_id()
-            self.next_msg = (self.next_msg + 1) % 4
+        #If mavproxy gets opendroneid msg from MC, it overrides this modules messages
+        if now > self.mpstate.override_timeout:
+            #update settings file
+            if now - self.last_loc_send_s > 1.0/self.OpenDroneID_settings.location_rate_hz:
+                self.last_loc_send_s = now
+                self.send_system_update()
+            if now - self.last_send_s > (1.0/self.OpenDroneID_settings.rate_hz)/4:
+                self.last_send_s = now
+                if self.next_msg == 0:
+                    self.send_basic_id()
+                elif self.next_msg == 1:
+                    self.send_system()
+                elif self.next_msg == 2:
+                    self.send_self_id()
+                elif self.next_msg == 3:
+                    self.send_operator_id()
+                self.next_msg = (self.next_msg + 1) % 4
+
+            self.gps_override = False
+        else:
+            self.gps_override = True
+        if now > self.interval_time:
+            self.update_gps_status()
+            self.interval_time = time.time()+self.status_period
 
 def init(mpstate):
     '''initialise module'''

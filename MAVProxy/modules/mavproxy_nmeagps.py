@@ -8,18 +8,57 @@ import sys, os, serial, time
 from MAVProxy.modules.lib import mp_module
 from MAVProxy.modules.lib import mp_settings
 from MAVProxy.modules.lib import mp_util
+import multiprocessing
+from time import sleep
+
+try:
+    from setting_utils import *
+except ImportError as e:
+    raise(e)
+
 
 try:
     import pynmea2
 except ImportError as e:
-    print('please install pynmea2 package with "sudo apt install python3-nmea2" or "python -m pip install pynmea2"')
+    raise(e)
+
+
+'''
+class NMEAGPSstatus():
+    def __init__(self,port, position):
+        self.port = port
+        self.position = position
+
+    def set_port(self, port):
+        self.port = port
+
+    def set_position(self, position):
+        self.position = position
+
+
+    def update_status(self):
+        status = ["No status", 'warning']
+        if self.port is None:
+            status = ["GPS is not connected", 'warning']
+        elif self.position.timestamp is None:
+            status = ["No position", 'warning']
+        else:
+            try:
+                res = str(self.position)
+                status = [res, 'info']
+            except Exception as e:
+                status = ["No position", 'warning']
+        data = {"gps_status" : status}
+        set_status("gps_status", data)
+'''
+
 
 class NMEAGPSModule(mp_module.MPModule):
     def __init__(self, mpstate):
         super(NMEAGPSModule, self).__init__(mpstate, "NMEAGPS", "NMEA input")
         self.nmeagps_settings = mp_settings.MPSettings([
-            ("port", str, None),
-            ("baudrate", int, 9600),
+            ("port", str, "/dev/ttyAMA0"),
+            ("baudrate", int, 9600)
             ])
         self.add_completion_function('(NMEAGPSSETTING)',
                                      self.nmeagps_settings.completion)
@@ -27,6 +66,11 @@ class NMEAGPSModule(mp_module.MPModule):
                          ["<status|connect|disconnect>", "set (NMEAGPSSETTING)"])
         self.port = None
         self.position = mp_util.mp_position()
+        self.nmeagps_settings.load_json(get_modules_json_file("nmeagps.json"))
+        #self.interval_time = 0
+
+        #self.gpsstatus = NMEAGPSstatus(self.port, self.position)
+
 
     def cmd_nmeagps(self, args):
         '''nmeagps commands'''
@@ -70,10 +114,14 @@ class NMEAGPSModule(mp_module.MPModule):
             return
         print(self.position)
 
+
     def idle_task(self):
         '''check for new data'''
         if self.port is None:
-            return
+            try:
+                self.cmd_connect()
+            except Exception as ex:
+                return
         line = self.port.readline()
         try:
             line = line.decode("ascii")
@@ -98,6 +146,12 @@ class NMEAGPSModule(mp_module.MPModule):
             self.position.ground_speed = msg.spd_over_grnd
             self.position.timestamp = time.time()
             self.mpstate.position = self.position
+        #if time.time() > self.interval_time:
+        #    self.gpsstatus.set_position(self.position)
+        #    self.gpsstatus.set_port(self.port)
+        #    self.gpsstatus.update_status()
+        #    self.interval_time = time.time()+self.nmeagps_settings.status_period
+
 
 def init(mpstate):
     '''initialise module'''

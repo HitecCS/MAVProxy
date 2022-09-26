@@ -2,6 +2,7 @@
 '''settings object for MAVProxy modules'''
 
 import time
+import json
 
 class MPSetting:
     def __init__(self, name, type, default, label=None, tab=None,
@@ -201,6 +202,18 @@ class MPSettings(object):
         for k in self.list():
             f.write("%s=%s\n" % (k, self.get(k)))
         f.close()
+        return True
+
+
+    def load_json(self, filename):
+        '''load settings from a json file, Return True/False on success/failure '''
+        try:
+            with open(filename, 'r') as f:
+                data = json.load(f)
+        except Exception:
+            return False
+        for name, value in data.items():
+            self.set(name, value)
         return True
 
 
