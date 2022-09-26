@@ -5,9 +5,9 @@ After=network.target
 [Service]
 Type=simple
 User=pi
-WorkingDirectory=/home/pi/telemetry
-EnvironmentFile=/etc/environment.d/telemetry_service.conf
-ExecStart=/home/pi/.local/bin/mavproxy.py --master=udp:0.0.0.0:14550 $SERIAL_MASTER $SERIAL_OUT --state-basedir=/home/pi/telemetry/logs --non-interactive --daemon --default-modules dynamic_telemetry,BMS,radio_status,ntrip
+WorkingDirectory=/home/pi
+Environment="PYTHONPATH=/home/pi/settings"
+ExecStart=/home/pi/.local/bin/mavproxy.py --non-interactive --daemon --state-basedir=/home/pi/telemetry/logs --default-modules BMS,radio_status,baro,ntrip,nmeagps,OpenDroneID
 ExecReload=/bin/kill -s HUP $MAINPID
 ExecStop=/bin/kill -s TERM $MAINPID
 TimeoutStopSec=3
